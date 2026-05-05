@@ -1,8 +1,10 @@
+import os
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
-from uuid import uuid4
+
+from server.paged_attention import PagedKVCacheManager
 
 
 @dataclass
@@ -15,12 +17,26 @@ class RequestItem:
     result: Optional[str] = None
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 class Scheduler:
     def __init__(self, batch_size: int = 4, batch_timeout: float = 0.05) -> None:
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
         self.queue: List[RequestItem] = []
         self.lock = threading.Lock()
+        self.kv = PagedKVCacheManager(
+            block_size=_env_int("PAGED_BLOCK_SIZE", 16),
+            num_blocks=_env_int("PAGED_NUM_BLOCKS", 256),
+        )
         self.total_batches = 0
         self.total_wait_time = 0.0
         self.total_processed = 0
@@ -29,8 +45,8 @@ class Scheduler:
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
         self._worker.start()
 
-    def submit_request(self, prompt: str, user_id: str) -> str:
-        item = RequestItem(request_id=str(uuid4()), prompt=prompt, user_id=user_id)
+    def submit_request(self, prompt: str, user_id: str, request_id: str) -> str:
+        item = RequestItem(request_id=request_id, prompt=prompt, user_id=user_id)
         with self.lock:
             self.queue.append(item)
             if len(self.queue) > self.max_queue_length:
@@ -47,11 +63,13 @@ class Scheduler:
                 if self.total_processed > 0
                 else 0.0
             )
-            return {
+            metrics = {
                 "total_batches": self.total_batches,
                 "avg_wait_time": avg_wait_time,
                 "max_queue_length": self.max_queue_length,
             }
+        metrics.update(self.kv.stats())
+        return metrics
 
     def _batch_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -79,15 +97,22 @@ class Scheduler:
             return batch
 
     def _process_batch(self, batch: List[RequestItem]) -> None:
+        for item in batch:
+            # Toy prefill length: one logical token slot per character (deterministic).
+            self.kv.ensure_tokens(item.request_id, total_tokens=len(item.prompt))
         now = time.monotonic()
         total_batch_wait = sum(now - item.created_at for item in batch)
-        # Simulate inference cost scaling with batch size.
-        time.sleep(0.02 * len(batch))
-        with self.lock:
-            self.total_batches += 1
-            self.total_processed += len(batch)
-            self.total_wait_time += total_batch_wait
-        for item in batch:
-            item.result = f"processed: {item.prompt}"
-            item.done_event.set()
+        try:
+            # Simulate inference cost scaling with batch size.
+            time.sleep(0.02 * len(batch))
+            with self.lock:
+                self.total_batches += 1
+                self.total_processed += len(batch)
+                self.total_wait_time += total_batch_wait
+            for item in batch:
+                item.result = f"processed: {item.prompt}"
+                item.done_event.set()
+        finally:
+            for item in batch:
+                self.kv.release_sequence(item.request_id)
 

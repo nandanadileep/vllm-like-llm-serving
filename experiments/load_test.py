@@ -56,7 +56,10 @@ def fetch_metrics() -> None:
     print("Metrics:")
     print(f"  total_batches: {metrics.get('total_batches', 'n/a')}")
     print(f"  avg_wait_time: {metrics.get('avg_wait_time', 'n/a')}")
-    print(f"  max_queue_length: {metrics.get('max_queue_length', 'n/a')}\n")
+    print(f"  max_queue_length: {metrics.get('max_queue_length', 'n/a')}")
+    print(f"  kv_total_blocks: {metrics.get('kv_total_blocks', 'n/a')}")
+    print(f"  kv_free_blocks: {metrics.get('kv_free_blocks', 'n/a')}")
+    print(f"  kv_active_sequences: {metrics.get('kv_active_sequences', 'n/a')}\n")
 
 
 def run_level(concurrency: int) -> None:

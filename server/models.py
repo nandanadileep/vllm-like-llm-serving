@@ -31,3 +31,6 @@ class MetricsResponse(BaseModel):
     total_batches: int
     avg_wait_time: float
     max_queue_length: int
+    kv_total_blocks: int = 0
+    kv_free_blocks: int = 0
+    kv_active_sequences: int = 0
