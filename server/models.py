@@ -18,4 +18,6 @@ class GenerateRequest(BaseModel):
 
 
 class GenerateResponse(BaseModel):
+    # Keep external API shape stable as a single object per request.
+    # Internal batching should still map each request to one response payload.
     response: str
