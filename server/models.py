@@ -25,3 +25,9 @@ class GenerateResponse(BaseModel):
         description="Single response string for one request (stable external shape)",
         examples=["stub response"],
     )
+
+
+class MetricsResponse(BaseModel):
+    total_batches: int
+    avg_wait_time: float
+    max_queue_length: int

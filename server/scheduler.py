@@ -21,6 +21,10 @@ class Scheduler:
         self.batch_timeout = batch_timeout
         self.queue: List[RequestItem] = []
         self.lock = threading.Lock()
+        self.total_batches = 0
+        self.total_wait_time = 0.0
+        self.total_processed = 0
+        self.max_queue_length = 0
         self._stop_event = threading.Event()
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
         self._worker.start()
@@ -29,10 +33,25 @@ class Scheduler:
         item = RequestItem(request_id=str(uuid4()), prompt=prompt, user_id=user_id)
         with self.lock:
             self.queue.append(item)
+            if len(self.queue) > self.max_queue_length:
+                self.max_queue_length = len(self.queue)
         item.done_event.wait()
         if item.result is None:
             raise RuntimeError("Scheduler completed request without a result")
         return item.result
+
+    def get_metrics(self) -> dict[str, float | int]:
+        with self.lock:
+            avg_wait_time = (
+                self.total_wait_time / self.total_processed
+                if self.total_processed > 0
+                else 0.0
+            )
+            return {
+                "total_batches": self.total_batches,
+                "avg_wait_time": avg_wait_time,
+                "max_queue_length": self.max_queue_length,
+            }
 
     def _batch_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -60,6 +79,12 @@ class Scheduler:
             return batch
 
     def _process_batch(self, batch: List[RequestItem]) -> None:
+        now = time.monotonic()
+        total_batch_wait = sum(now - item.created_at for item in batch)
+        with self.lock:
+            self.total_batches += 1
+            self.total_processed += len(batch)
+            self.total_wait_time += total_batch_wait
         for item in batch:
             item.result = f"processed: {item.prompt}"
             item.done_event.set()

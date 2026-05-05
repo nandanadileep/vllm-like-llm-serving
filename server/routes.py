@@ -1,6 +1,11 @@
 from fastapi import APIRouter
 
-from server.models import GenerateRequest, GenerateResponse, HealthResponse
+from server.models import (
+    GenerateRequest,
+    GenerateResponse,
+    HealthResponse,
+    MetricsResponse,
+)
 from server.scheduler import Scheduler
 
 router = APIRouter(tags=["api"])
@@ -19,3 +24,8 @@ def generate(payload: GenerateRequest) -> GenerateResponse:
     result = scheduler.submit_request(prompt=payload.prompt, user_id=payload.user_id)
     # Keep external response shape stable: one object with `response` per request.
     return GenerateResponse(response=result)
+
+
+@router.get("/metrics", response_model=MetricsResponse)
+def metrics() -> MetricsResponse:
+    return MetricsResponse(**scheduler.get_metrics())
