@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from server.paged_attention import PagedKVCacheManager
+from server.paged_attention import BlockPoolExhausted, PagedKVCacheManager
 
 
 @dataclass
@@ -40,6 +40,7 @@ class Scheduler:
         self.total_batches = 0
         self.total_wait_time = 0.0
         self.total_processed = 0
+        self.total_preemptions = 0
         self.max_queue_length = 0
         self._stop_event = threading.Event()
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
@@ -67,6 +68,7 @@ class Scheduler:
                 "total_batches": self.total_batches,
                 "avg_wait_time": avg_wait_time,
                 "max_queue_length": self.max_queue_length,
+                "total_preemptions": self.total_preemptions,
             }
         metrics.update(self.kv.metrics())
         return metrics
@@ -96,23 +98,45 @@ class Scheduler:
             del self.queue[: len(batch)]
             return batch
 
+    def _allocate_batch_with_preemption(self, batch: List[RequestItem]) -> List[RequestItem]:
+        """Allocate KV for all items in batch, preempting latest-arrived on exhaustion."""
+        working = list(batch)
+        while True:
+            try:
+                for item in working:
+                    self.kv.allocate(item.request_id, num_tokens=len(item.prompt))
+                return working
+            except BlockPoolExhausted:
+                if not working:
+                    raise RuntimeError(
+                        "BlockPoolExhausted with empty working batch"
+                    ) from None
+                victim = max(working, key=lambda x: x.created_at)
+                self.kv.free(victim.request_id)
+                working.remove(victim)
+                with self.lock:
+                    self.queue.insert(0, victim)
+                    self.total_preemptions += 1
+                if not working:
+                    return []
+
     def _process_batch(self, batch: List[RequestItem]) -> None:
-        for item in batch:
-            # Toy prefill length: one logical token slot per character (deterministic).
-            self.kv.allocate(item.request_id, num_tokens=len(item.prompt))
+        working = self._allocate_batch_with_preemption(batch)
+        if not working:
+            return
         now = time.monotonic()
-        total_batch_wait = sum(now - item.created_at for item in batch)
+        total_batch_wait = sum(now - item.created_at for item in working)
         try:
             # Simulate inference cost scaling with batch size.
-            time.sleep(0.02 * len(batch))
+            time.sleep(0.02 * len(working))
             with self.lock:
                 self.total_batches += 1
-                self.total_processed += len(batch)
+                self.total_processed += len(working)
                 self.total_wait_time += total_batch_wait
-            for item in batch:
+            for item in working:
                 item.result = f"processed: {item.prompt}"
                 item.done_event.set()
         finally:
-            for item in batch:
+            for item in working:
                 self.kv.free(item.request_id)
 
