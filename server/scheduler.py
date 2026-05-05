@@ -68,7 +68,7 @@ class Scheduler:
                 "avg_wait_time": avg_wait_time,
                 "max_queue_length": self.max_queue_length,
             }
-        metrics.update(self.kv.stats())
+        metrics.update(self.kv.metrics())
         return metrics
 
     def _batch_loop(self) -> None:
@@ -99,7 +99,7 @@ class Scheduler:
     def _process_batch(self, batch: List[RequestItem]) -> None:
         for item in batch:
             # Toy prefill length: one logical token slot per character (deterministic).
-            self.kv.ensure_tokens(item.request_id, total_tokens=len(item.prompt))
+            self.kv.allocate(item.request_id, num_tokens=len(item.prompt))
         now = time.monotonic()
         total_batch_wait = sum(now - item.created_at for item in batch)
         try:
@@ -114,5 +114,5 @@ class Scheduler:
                 item.done_event.set()
         finally:
             for item in batch:
-                self.kv.release_sequence(item.request_id)
+                self.kv.free(item.request_id)
 
