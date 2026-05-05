@@ -81,6 +81,8 @@ class Scheduler:
     def _process_batch(self, batch: List[RequestItem]) -> None:
         now = time.monotonic()
         total_batch_wait = sum(now - item.created_at for item in batch)
+        # Simulate inference cost scaling with batch size.
+        time.sleep(0.02 * len(batch))
         with self.lock:
             self.total_batches += 1
             self.total_processed += len(batch)
