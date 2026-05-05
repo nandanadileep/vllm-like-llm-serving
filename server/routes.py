@@ -12,5 +12,6 @@ def health() -> HealthResponse:
 
 @router.post("/generate", response_model=GenerateResponse)
 def generate(payload: GenerateRequest) -> GenerateResponse:
+    """Synchronous stub endpoint; async scheduling will be introduced later."""
     # Stub: wire payload.prompt / payload.user_id to the model when ready.
     return GenerateResponse(response="stub response")
