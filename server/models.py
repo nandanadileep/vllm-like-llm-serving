@@ -15,6 +15,10 @@ class GenerateRequest(BaseModel):
         min_length=1,
         description="Client request identifier used for response correlation",
     )
+    streaming: bool = Field(
+        default=False,
+        description="Hint for clients; use POST /generate/stream for SSE (this field is ignored by POST /generate)",
+    )
 
 
 class GenerateResponse(BaseModel):

@@ -1,6 +1,10 @@
+import json
 import os
+import time
+from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 
 from server.models import (
     GenerateRequest,
@@ -55,6 +59,55 @@ def generate(payload: GenerateRequest) -> GenerateResponse:
     )
     # Keep external response shape stable: one object with `response` per request.
     return GenerateResponse(response=result)
+
+
+def _sse_token_delay_seconds() -> float:
+    return _env_float("STREAM_TOKEN_DELAY", 0.02)
+
+
+def _sse_generate(payload: GenerateRequest):
+    print(f"[stream] request from {payload.user_id}")
+    token_delay = _sse_token_delay_seconds()
+    for token in scheduler.submit_request_stream(
+        prompt=payload.prompt,
+        user_id=payload.user_id,
+        request_id=payload.request_id,
+    ):
+        chunk = json.dumps({"token": token, "done": False})
+        yield f"data: {chunk}\n\n"
+        time.sleep(token_delay)
+    final = json.dumps({"token": "", "done": True})
+    yield f"data: {final}\n\n"
+
+
+@router.post("/generate/stream")
+def generate_stream_post(payload: GenerateRequest) -> StreamingResponse:
+    return StreamingResponse(
+        _sse_generate(payload),
+        media_type="text/event-stream",
+    )
+
+
+@router.get("/generate/stream")
+def generate_stream_get(
+    prompt: str = Query(..., min_length=1),
+    user_id: str = Query(..., min_length=1),
+    request_id: str | None = Query(
+        default=None,
+        min_length=1,
+        description="Optional; generated if omitted",
+    ),
+) -> StreamingResponse:
+    rid = request_id or str(uuid4())
+    payload = GenerateRequest(
+        prompt=prompt,
+        user_id=user_id,
+        request_id=rid,
+    )
+    return StreamingResponse(
+        _sse_generate(payload),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/metrics", response_model=MetricsResponse)

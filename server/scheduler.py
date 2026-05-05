@@ -2,7 +2,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from server.paged_attention import BlockPoolExhausted, PagedKVCacheManager
 
@@ -56,6 +56,14 @@ class Scheduler:
         if item.result is None:
             raise RuntimeError("Scheduler completed request without a result")
         return item.result
+
+    def submit_request_stream(
+        self, prompt: str, user_id: str, request_id: str
+    ) -> Iterator[str]:
+        """Run full batch inference, then yield stub result as word tokens (not incremental decode)."""
+        result = self.submit_request(prompt, user_id, request_id)
+        for word in result.split():
+            yield word
 
     def get_metrics(self) -> dict[str, float | int]:
         with self.lock:
