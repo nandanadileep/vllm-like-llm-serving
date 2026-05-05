@@ -58,6 +58,7 @@ def fetch_metrics() -> None:
     print(f"  avg_wait_time: {metrics.get('avg_wait_time', 'n/a')}")
     print(f"  max_queue_length: {metrics.get('max_queue_length', 'n/a')}")
     print(f"  total_preemptions: {metrics.get('total_preemptions', 'n/a')}")
+    print(f"  total_prefill_chunks: {metrics.get('total_prefill_chunks', 'n/a')}")
     print(f"  total_blocks: {metrics.get('total_blocks', 'n/a')}")
     print(f"  free_blocks: {metrics.get('free_blocks', 'n/a')}")
     print(f"  active_sequences: {metrics.get('active_sequences', 'n/a')}\n")

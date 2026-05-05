@@ -15,6 +15,8 @@ class RequestItem:
     created_at: float = field(default_factory=time.monotonic)
     done_event: threading.Event = field(default_factory=threading.Event)
     result: Optional[str] = None
+    prefill_cursor: int = 0
+    is_prefilling: bool = True
 
 
 def _env_int(name: str, default: int) -> int:
@@ -31,6 +33,7 @@ class Scheduler:
     def __init__(self, batch_size: int = 4, batch_timeout: float = 0.05) -> None:
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
+        self.prefill_chunk_size = _env_int("PREFILL_CHUNK_SIZE", 128)
         self.queue: List[RequestItem] = []
         self.lock = threading.Lock()
         self.kv = PagedKVCacheManager(
@@ -41,10 +44,30 @@ class Scheduler:
         self.total_wait_time = 0.0
         self.total_processed = 0
         self.total_preemptions = 0
+        self.total_prefill_chunks = 0
         self.max_queue_length = 0
         self._stop_event = threading.Event()
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
         self._worker.start()
+
+    @staticmethod
+    def _prompt_words(prompt: str) -> List[str]:
+        return prompt.split()
+
+    def _prompt_word_count(self, prompt: str) -> int:
+        return max(1, len(self._prompt_words(prompt)))
+
+    def _kv_target_after_prefill_chunk(self, item: RequestItem) -> int:
+        """Cumulative word-token count KV must cover after this prefill chunk."""
+        words = self._prompt_words(item.prompt)
+        nw = len(words)
+        if nw == 0:
+            return max(1, item.prefill_cursor + 1)
+        chunk = min(self.prefill_chunk_size, max(0, nw - item.prefill_cursor))
+        return max(1, item.prefill_cursor + chunk)
+
+    def _kv_target_decode(self, item: RequestItem) -> int:
+        return self._prompt_word_count(item.prompt)
 
     def submit_request(self, prompt: str, user_id: str, request_id: str) -> str:
         item = RequestItem(request_id=request_id, prompt=prompt, user_id=user_id)
@@ -77,6 +100,7 @@ class Scheduler:
                 "avg_wait_time": avg_wait_time,
                 "max_queue_length": self.max_queue_length,
                 "total_preemptions": self.total_preemptions,
+                "total_prefill_chunks": self.total_prefill_chunks,
             }
         metrics.update(self.kv.metrics())
         return metrics
@@ -90,6 +114,7 @@ class Scheduler:
             self._process_batch(batch)
 
     def _get_next_batch(self) -> List[RequestItem]:
+        """Pop up to batch_size requests; chunking is applied in _process_batch."""
         with self.lock:
             if not self.queue:
                 return []
@@ -106,13 +131,22 @@ class Scheduler:
             del self.queue[: len(batch)]
             return batch
 
+    def _reset_prefill_state(self, item: RequestItem) -> None:
+        """KV was freed; restart prefill bookkeeping (no swap-to-CPU)."""
+        item.prefill_cursor = 0
+        item.is_prefilling = True
+
     def _allocate_batch_with_preemption(self, batch: List[RequestItem]) -> List[RequestItem]:
         """Allocate KV for all items in batch, preempting latest-arrived on exhaustion."""
         working = list(batch)
         while True:
             try:
                 for item in working:
-                    self.kv.allocate(item.request_id, num_tokens=len(item.prompt))
+                    if item.is_prefilling:
+                        n = self._kv_target_after_prefill_chunk(item)
+                    else:
+                        n = self._kv_target_decode(item)
+                    self.kv.allocate(item.request_id, num_tokens=n)
                 return working
             except BlockPoolExhausted:
                 if not working:
@@ -121,6 +155,7 @@ class Scheduler:
                     ) from None
                 victim = max(working, key=lambda x: x.created_at)
                 self.kv.free(victim.request_id)
+                self._reset_prefill_state(victim)
                 working.remove(victim)
                 with self.lock:
                     self.queue.insert(0, victim)
@@ -134,17 +169,40 @@ class Scheduler:
             return
         now = time.monotonic()
         total_batch_wait = sum(now - item.created_at for item in working)
+        decode_finished: List[RequestItem] = []
         try:
-            # Simulate inference cost scaling with batch size.
             time.sleep(0.02 * len(working))
+            completed_decodes = 0
+            for item in working:
+                if item.is_prefilling:
+                    words = self._prompt_words(item.prompt)
+                    nw = len(words)
+                    chunk = min(
+                        self.prefill_chunk_size,
+                        max(0, nw - item.prefill_cursor),
+                    )
+                    item.prefill_cursor += chunk
+                    with self.lock:
+                        self.total_prefill_chunks += 1
+                    if item.prefill_cursor >= nw:
+                        item.is_prefilling = False
+                    if item.is_prefilling:
+                        with self.lock:
+                            self.queue.append(item)
+                    else:
+                        item.result = f"processed: {item.prompt}"
+                        item.done_event.set()
+                        decode_finished.append(item)
+                        completed_decodes += 1
+                else:
+                    item.result = f"processed: {item.prompt}"
+                    item.done_event.set()
+                    decode_finished.append(item)
+                    completed_decodes += 1
             with self.lock:
                 self.total_batches += 1
-                self.total_processed += len(working)
+                self.total_processed += completed_decodes
                 self.total_wait_time += total_batch_wait
-            for item in working:
-                item.result = f"processed: {item.prompt}"
-                item.done_event.set()
         finally:
-            for item in working:
+            for item in decode_finished:
                 self.kv.free(item.request_id)
-

@@ -36,6 +36,7 @@ class MetricsResponse(BaseModel):
     avg_wait_time: float
     max_queue_length: int
     total_preemptions: int = 0
+    total_prefill_chunks: int = 0
     total_blocks: int = 0
     free_blocks: int = 0
     active_sequences: int = 0
