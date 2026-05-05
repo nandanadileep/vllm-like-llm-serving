@@ -5,6 +5,7 @@ import requests
 
 BASE_URL = "http://127.0.0.1:8000"
 GENERATE_URL = f"{BASE_URL}/generate"
+HEALTH_URL = f"{BASE_URL}/health"
 METRICS_URL = f"{BASE_URL}/metrics"
 CONCURRENCY_LEVELS = [1, 2, 4, 8, 16, 32]
 REQUESTS_PER_LEVEL = 64
@@ -22,6 +23,25 @@ def send_request(i: int) -> float:
     end = time.time()
     response.raise_for_status()
     return end - start
+
+
+def ensure_server_ready() -> bool:
+    try:
+        response = requests.get(HEALTH_URL, timeout=REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        print("Server is not reachable at http://127.0.0.1:8000")
+        print("Start it first with:")
+        print("  uvicorn server.app:app --reload\n")
+        return False
+
+    if payload.get("status") != "ok":
+        print("Health check did not return expected payload:")
+        print(payload)
+        return False
+
+    return True
 
 
 def fetch_metrics() -> None:
@@ -60,6 +80,9 @@ def main() -> None:
     print("Running load test against /generate")
     print(f"Target: {GENERATE_URL}")
     print(f"Requests per level: {REQUESTS_PER_LEVEL}\n")
+
+    if not ensure_server_ready():
+        return
 
     for concurrency in CONCURRENCY_LEVELS:
         run_level(concurrency)
