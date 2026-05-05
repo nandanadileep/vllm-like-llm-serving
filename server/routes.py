@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter
 
 from server.models import (
@@ -9,7 +11,32 @@ from server.models import (
 from server.scheduler import Scheduler
 
 router = APIRouter(tags=["api"])
-scheduler = Scheduler()
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+scheduler = Scheduler(
+    batch_size=_env_int("BATCH_SIZE", 4),
+    batch_timeout=_env_float("BATCH_TIMEOUT", 0.05),
+)
 
 
 @router.get("/health", response_model=HealthResponse)
