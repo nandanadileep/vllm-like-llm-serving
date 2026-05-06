@@ -56,6 +56,7 @@ def generate(payload: GenerateRequest) -> GenerateResponse:
         prompt=payload.prompt,
         user_id=payload.user_id,
         request_id=payload.request_id,
+        max_tokens=payload.max_tokens,
     )
     # Keep external response shape stable: one object with `response` per request.
     return GenerateResponse(response=result)
