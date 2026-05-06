@@ -1,3 +1,18 @@
+"""Request scheduling and batched inference.
+
+Parity notes for writing about this stack versus vLLM:
+
+- **Continuous batching (decode)**: `mlx_lm.batch_generate` drives MLX’s
+  `BatchGenerator`, which interleaves chunked prefill and batched decode steps
+  for all sequences inserted in that wave (see upstream ``mlx_lm.generate``).
+- **This file’s PagedKVCacheManager**: a Python block-pool *simulator* for
+  admission, preemption, and metrics. It is not wired into MLX attention; vLLM’s
+  PagedAttention is GPU-side block tables inside the model.
+- **Not attempted here**: CUDA kernels, tensor/pipeline parallel, prefix
+  caching, speculative decoding, or cross-wave global scheduling (each HTTP wave
+  still runs to completion before the next dequeue).
+"""
+
 import os
 import threading
 import time
@@ -15,6 +30,8 @@ class RequestItem:
     request_id: str
     prompt: str
     user_id: str
+    """Tokenizer output for ``prompt``; used for token-accurate prefill/KV."""
+    prompt_token_ids: List[int] = field(default_factory=list)
     created_at: float = field(default_factory=time.monotonic)
     done_event: threading.Event = field(default_factory=threading.Event)
     result: Optional[str] = None
@@ -62,24 +79,18 @@ class Scheduler:
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
         self._worker.start()
 
-    @staticmethod
-    def _prompt_words(prompt: str) -> List[str]:
-        return prompt.split()
-
-    def _prompt_word_count(self, prompt: str) -> int:
-        return max(1, len(self._prompt_words(prompt)))
-
     def _kv_target_after_prefill_chunk(self, item: RequestItem) -> int:
-        """Cumulative word-token count KV must cover after this prefill chunk."""
-        words = self._prompt_words(item.prompt)
-        nw = len(words)
-        if nw == 0:
+        """Cumulative prompt tokens the simulated KV must cover after this chunk."""
+        nt = len(item.prompt_token_ids)
+        if nt == 0:
             return max(1, item.prefill_cursor + 1)
-        chunk = min(self.prefill_chunk_size, max(0, nw - item.prefill_cursor))
+        chunk = min(self.prefill_chunk_size, max(0, nt - item.prefill_cursor))
         return max(1, item.prefill_cursor + chunk)
 
     def _kv_target_decode(self, item: RequestItem) -> int:
-        return self._prompt_word_count(item.prompt)
+        """Upper-bound KV footprint: full prompt plus max new tokens."""
+        nt = len(item.prompt_token_ids)
+        return max(1, nt + item.max_tokens)
 
     def _encode_prompt_tokens(self, prompt: str) -> List[int]:
         """Match mlx_lm string encoding so batch and single-path prompts align."""
@@ -96,7 +107,7 @@ class Scheduler:
         for item in items:
             item.ttft = now - item.created_at
 
-        prompts = [self._encode_prompt_tokens(item.prompt) for item in items]
+        prompts = [list(item.prompt_token_ids) for item in items]
         max_tokens = [item.max_tokens for item in items]
         batch_response = mlx_lm.batch_generate(
             self.model,
@@ -114,7 +125,14 @@ class Scheduler:
 
     def submit_request(self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200) -> str:
         self._model_ready.wait()
-        item = RequestItem(request_id=request_id, prompt=prompt, user_id=user_id, max_tokens=max_tokens)
+        prompt_token_ids = self._encode_prompt_tokens(prompt)
+        item = RequestItem(
+            request_id=request_id,
+            prompt=prompt,
+            user_id=user_id,
+            prompt_token_ids=prompt_token_ids,
+            max_tokens=max_tokens,
+        )
         with self.lock:
             self.queue.append(item)
             if len(self.queue) > self.max_queue_length:
@@ -228,16 +246,15 @@ class Scheduler:
             to_decode: List[RequestItem] = []
             for item in working:
                 if item.is_prefilling:
-                    words = self._prompt_words(item.prompt)
-                    nw = len(words)
+                    nt = len(item.prompt_token_ids)
                     chunk = min(
                         self.prefill_chunk_size,
-                        max(0, nw - item.prefill_cursor),
+                        max(0, nt - item.prefill_cursor),
                     )
                     item.prefill_cursor += chunk
                     with self.lock:
                         self.total_prefill_chunks += 1
-                    if item.prefill_cursor >= nw:
+                    if item.prefill_cursor >= nt:
                         item.is_prefilling = False
                     if item.is_prefilling:
                         with self.lock:
