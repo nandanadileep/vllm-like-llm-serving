@@ -5,8 +5,9 @@ Parity notes for writing about this stack versus vLLM:
 - **Continuous batching (decode)**: `mlx_lm.batch_generate` drives MLX’s
   `BatchGenerator`, which interleaves chunked prefill and batched decode steps
   for all sequences inserted in that wave (see upstream ``mlx_lm.generate``).
-- **This file’s PagedKVCacheManager**: a Python block-pool *simulator* for
-  admission, preemption, and metrics. It is not wired into MLX attention; vLLM’s
+- **This file’s PagedKVCacheManager**: a Python block-pool *mimic* (global
+  physical blocks, per-sequence block tables, ``resolve()`` page walks,
+  fragmentation-style metrics). It is not wired into MLX attention; vLLM’s
   PagedAttention is GPU-side block tables inside the model.
 - **Not attempted here**: CUDA kernels, tensor/pipeline parallel, prefix
   caching, speculative decoding, or cross-wave global scheduling (each HTTP wave

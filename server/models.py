@@ -41,6 +41,12 @@ class MetricsResponse(BaseModel):
     total_prefill_chunks: int = 0
     total_blocks: int = 0
     free_blocks: int = 0
+    used_physical_blocks: int = 0
+    peak_used_physical_blocks: int = 0
     active_sequences: int = 0
+    committed_kv_tokens: int = 0
+    reserved_token_slots: int = 0
+    unused_reserved_slots: int = 0
+    pool_slot_utilization: float = 0.0
     total_tokens_generated: int = 0
     memory_mb: float = 0.0
