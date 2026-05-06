@@ -13,21 +13,28 @@ Parity notes for writing about this stack versus vLLM:
   ``BatchKVCache`` with :mod:`server.gather_batch_paged_kv` so KV is also stored
   in a physical block tensor and **re-materialized via ``mx.take`` each step**
   before ``scaled_dot_product_attention`` (dense SDPA, paged backing store).
-- **Not attempted here**: CUDA kernels, tensor/pipeline parallel, prefix
-  caching, speculative decoding, or cross-wave global scheduling (each HTTP wave
-  still runs to completion before the next dequeue).
+- **Optional features (env-gated)**:
+  - ``PREFIX_CACHE_ENABLED``: exact-match ``mlx_lm`` prompt cache reuse.
+  - ``MLX_GLOBAL_BATCH_GENERATOR``: one long-lived ``BatchGenerator`` loop
+    (continuous admission) instead of wave-only ``batch_generate``.
+  - ``SPECULATIVE_DECODE`` + ``DRAFT_MODEL_PATH``: single-request speculative
+    path via ``mlx_lm.generate`` (batched requests still use ``batch_generate``).
+- **Not attempted here**: CUDA kernels, tensor/pipeline parallel, or vLLM-style
+  fused paged attention kernels.
 """
 
 import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Iterator, List, Optional
+from importlib import import_module
+from typing import Any, Dict, Iterator, List, Optional
 
 import mlx_lm
 import psutil
 
 from server.paged_attention import BlockPoolExhausted, PagedKVCacheManager
+from server.prefix_kv_cache import PrefixKVCache
 
 
 @dataclass
@@ -68,15 +75,23 @@ class Scheduler:
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
         self.prefill_chunk_size = _env_int("PREFILL_CHUNK_SIZE", 128)
+        self.use_global_batch = _env_truthy("MLX_GLOBAL_BATCH_GENERATOR")
         self.queue: List[RequestItem] = []
         self.lock = threading.Lock()
         self.kv = PagedKVCacheManager(
             block_size=_env_int("PAGED_BLOCK_SIZE", 16),
             num_blocks=_env_int("PAGED_NUM_BLOCKS", 256),
         )
+        self._prefix_cache = PrefixKVCache(
+            enabled=_env_truthy("PREFIX_CACHE_ENABLED"),
+            max_entries=_env_int("PREFIX_CACHE_MAX_ENTRIES", 256),
+            ttl_sec=float(os.getenv("PREFIX_CACHE_TTL_SEC") or 0.0),
+        )
         self._model_path = os.getenv("MODEL_PATH", "mlx-community/Llama-3.2-3B-Instruct-4bit")
         self.model = None
         self.tokenizer = None
+        self._draft_model = None
+        self._draft_model_path: Optional[str] = None
         self._model_ready = threading.Event()
         self.total_batches = 0
         self.total_wait_time = 0.0
@@ -86,6 +101,8 @@ class Scheduler:
         self.total_tokens_generated = 0
         self.total_ttft = 0.0
         self.max_queue_length = 0
+        self.global_batch_steps = 0
+        self.speculative_generations = 0
         self._process = psutil.Process(os.getpid())
         self._stop_event = threading.Event()
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
@@ -111,22 +128,73 @@ class Scheduler:
         add_special_tokens = bos is None or not prompt.startswith(bos)
         return list(tok.encode(prompt, add_special_tokens=add_special_tokens))
 
+    def _speculative_enabled(self) -> bool:
+        return _env_truthy("SPECULATIVE_DECODE") and bool(os.getenv("DRAFT_MODEL_PATH"))
+
+    def _ensure_draft_model(self) -> None:
+        path = os.getenv("DRAFT_MODEL_PATH")
+        if not path:
+            return
+        if self._draft_model is not None and path == self._draft_model_path:
+            return
+        self._draft_model, _ = mlx_lm.load(path)
+        self._draft_model_path = path
+
+    def _speculative_generate_single(self, item: RequestItem) -> Optional[str]:
+        """Single-stream speculative decode via ``mlx_lm.generate``."""
+        if not self._speculative_enabled():
+            return None
+        self._ensure_draft_model()
+        if self._draft_model is None:
+            return None
+        text = mlx_lm.generate(
+            self.model,
+            self.tokenizer,
+            prompt=item.prompt,
+            max_tokens=item.max_tokens,
+            verbose=False,
+            draft_model=self._draft_model,
+            num_draft_tokens=_env_int("NUM_DRAFT_TOKENS", 4),
+        )
+        with self.lock:
+            self.speculative_generations += 1
+        return text
+
     def _run_inference_batch(self, items: List[RequestItem]) -> None:
-        """One GPU forward pass for the whole batch (mlx_lm.batch_generate)."""
+        """Batched ``batch_generate``, with optional prefix caches and speculative fast path."""
         if not items:
             return
+        if len(items) == 1 and self._speculative_enabled():
+            now = time.monotonic()
+            items[0].ttft = now - items[0].created_at
+            text = self._speculative_generate_single(items[0])
+            if text is not None:
+                items[0].result = text
+                tokens_out = len(self.tokenizer.encode(text))
+                with self.lock:
+                    self.total_tokens_generated += tokens_out
+                    self.total_ttft += items[0].ttft
+                return
         now = time.monotonic()
         for item in items:
             item.ttft = now - item.created_at
 
         prompts = [list(item.prompt_token_ids) for item in items]
         max_tokens = [item.max_tokens for item in items]
+        prompt_caches: Optional[List[Any]] = None
+        if self._prefix_cache.enabled:
+            per = [self._prefix_cache.lookup(list(it.prompt_token_ids)) for it in items]
+            if any(c is not None for c in per):
+                prompt_caches = per
+        return_caches = self._prefix_cache.enabled
         batch_response = mlx_lm.batch_generate(
             self.model,
             self.tokenizer,
             prompts,
+            prompt_caches=prompt_caches,
             max_tokens=max_tokens,
             verbose=False,
+            return_prompt_caches=return_caches,
         )
         for item, text in zip(items, batch_response.texts):
             item.result = text
@@ -134,6 +202,10 @@ class Scheduler:
             with self.lock:
                 self.total_tokens_generated += tokens_out
                 self.total_ttft += item.ttft
+        if return_caches and batch_response.caches is not None:
+            for item, caches in zip(items, batch_response.caches):
+                if caches is not None:
+                    self._prefix_cache.store(list(item.prompt_token_ids), caches)
 
     def submit_request(self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200) -> str:
         self._model_ready.wait()
@@ -144,6 +216,8 @@ class Scheduler:
             user_id=user_id,
             prompt_token_ids=prompt_token_ids,
             max_tokens=max_tokens,
+            is_prefilling=not self.use_global_batch,
+            prefill_cursor=len(prompt_token_ids) if self.use_global_batch else 0,
         )
         with self.lock:
             self.queue.append(item)
@@ -183,8 +257,11 @@ class Scheduler:
                 "total_prefill_chunks": self.total_prefill_chunks,
                 "total_tokens_generated": self.total_tokens_generated,
                 "memory_mb": self._process.memory_info().rss / 1024 / 1024,
+                "global_batch_steps": self.global_batch_steps,
+                "speculative_generations": self.speculative_generations,
             }
         metrics.update(self.kv.metrics())
+        metrics.update(self._prefix_cache.metrics())
         return metrics
 
     def _batch_loop(self) -> None:
@@ -194,12 +271,121 @@ class Scheduler:
             install_gather_batch_paged_kv()
         self.model, self.tokenizer = mlx_lm.load(self._model_path)
         self._model_ready.set()
+        if self.use_global_batch:
+            self._global_batch_loop()
+            return
         while not self._stop_event.is_set():
             batch = self._get_next_batch()
             if not batch:
                 time.sleep(0.001)
                 continue
             self._process_batch(batch)
+
+    def _global_batch_loop(self) -> None:
+        """Continuous ``BatchGenerator`` loop: admit from the queue and step decode."""
+        gen_mod = import_module("mlx_lm.generate")
+        bg = gen_mod.BatchGenerator(
+            self.model,
+            stop_tokens=[[t] for t in self.tokenizer.eos_token_ids],
+            prefill_batch_size=self.batch_size,
+            completion_batch_size=self.batch_size,
+        )
+        uid_to_item: Dict[int, RequestItem] = {}
+        gen_tokens: Dict[int, List[int]] = {}
+        ttft_marked: set[int] = set()
+
+        while not self._stop_event.is_set():
+            self._global_try_admit(bg, uid_to_item, gen_tokens, ttft_marked)
+            responses = bg.next_generated()
+            if not responses:
+                if not uid_to_item:
+                    time.sleep(0.001)
+                continue
+            with self.lock:
+                self.global_batch_steps += 1
+            for r in responses:
+                uid = int(r.uid)
+                item = uid_to_item.get(uid)
+                if item is None:
+                    continue
+                if uid not in ttft_marked:
+                    item.ttft = time.monotonic() - item.created_at
+                    ttft_marked.add(uid)
+                if r.finish_reason is None:
+                    gen_tokens.setdefault(uid, []).append(int(r.token))
+                    continue
+                if r.finish_reason != "stop":
+                    gen_tokens.setdefault(uid, []).append(int(r.token))
+                tokens = gen_tokens.pop(uid, [])
+                text = self.tokenizer.decode(tokens) if tokens else ""
+                item.result = text
+                tokens_out = len(self.tokenizer.encode(text))
+                now = time.monotonic()
+                wait = now - item.created_at
+                with self.lock:
+                    self.total_processed += 1
+                    self.total_wait_time += wait
+                    self.total_tokens_generated += tokens_out
+                    self.total_ttft += item.ttft
+                if self._prefix_cache.enabled and r.prompt_cache is not None:
+                    self._prefix_cache.store(list(item.prompt_token_ids), r.prompt_cache)
+                self.kv.free(item.request_id)
+                item.done_event.set()
+                uid_to_item.pop(uid, None)
+                ttft_marked.discard(uid)
+
+    def _global_try_admit(
+        self,
+        bg: Any,
+        uid_to_item: Dict[int, RequestItem],
+        gen_tokens: Dict[int, List[int]],
+        ttft_marked: set[int],
+    ) -> None:
+        """Pull up to ``batch_size`` waiting requests and ``insert`` them."""
+        with self.lock:
+            if not self.queue:
+                return
+            admit: List[RequestItem] = []
+            while self.queue and len(admit) < self.batch_size:
+                admit.append(self.queue.pop(0))
+        if not admit:
+            return
+        kept: List[RequestItem] = []
+        for item in admit:
+            try:
+                self.kv.allocate(
+                    item.request_id,
+                    len(item.prompt_token_ids) + item.max_tokens,
+                )
+            except BlockPoolExhausted:
+                for it in kept:
+                    self.kv.free(it.request_id)
+                with self.lock:
+                    self.queue.insert(0, item)
+                    for it in reversed(kept):
+                        self.queue.insert(0, it)
+                with self.lock:
+                    self.total_preemptions += 1
+                return
+            kept.append(item)
+        prompts = [list(it.prompt_token_ids) for it in kept]
+        max_tokens = [it.max_tokens for it in kept]
+        caches_arg: Optional[List[Any]]
+        if self._prefix_cache.enabled:
+            caches_arg = [
+                self._prefix_cache.lookup(list(it.prompt_token_ids)) for it in kept
+            ]
+            if not any(c is not None for c in caches_arg):
+                caches_arg = None
+        else:
+            caches_arg = None
+        uids = bg.insert(prompts, max_tokens, caches=caches_arg)
+        with self.lock:
+            self.total_batches += 1
+        for uid, it in zip(uids, kept):
+            uid_to_item[int(uid)] = it
+            gen_tokens[int(uid)] = []
+            ttft_marked.discard(int(uid))
 
     def _get_next_batch(self) -> List[RequestItem]:
         """Pop up to batch_size requests; chunking is applied in _process_batch."""

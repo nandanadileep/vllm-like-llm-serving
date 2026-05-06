@@ -50,3 +50,8 @@ class MetricsResponse(BaseModel):
     pool_slot_utilization: float = 0.0
     total_tokens_generated: int = 0
     memory_mb: float = 0.0
+    prefix_cache_hits: int = 0
+    prefix_cache_misses: int = 0
+    prefix_cache_entries: int = 0
+    global_batch_steps: int = 0
+    speculative_generations: int = 0
