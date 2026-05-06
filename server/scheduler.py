@@ -4,6 +4,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Iterator, List, Optional
 
+import mlx_lm
+import psutil
+
 from server.paged_attention import BlockPoolExhausted, PagedKVCacheManager
 
 
@@ -17,6 +20,8 @@ class RequestItem:
     result: Optional[str] = None
     prefill_cursor: int = 0
     is_prefilling: bool = True
+    max_tokens: int = 200
+    ttft: Optional[float] = None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -40,12 +45,19 @@ class Scheduler:
             block_size=_env_int("PAGED_BLOCK_SIZE", 16),
             num_blocks=_env_int("PAGED_NUM_BLOCKS", 256),
         )
+        self._model_path = os.getenv("MODEL_PATH", "mlx-community/Llama-3.2-3B-Instruct-4bit")
+        self.model = None
+        self.tokenizer = None
+        self._model_ready = threading.Event()
         self.total_batches = 0
         self.total_wait_time = 0.0
         self.total_processed = 0
         self.total_preemptions = 0
         self.total_prefill_chunks = 0
+        self.total_tokens_generated = 0
+        self.total_ttft = 0.0
         self.max_queue_length = 0
+        self._process = psutil.Process(os.getpid())
         self._stop_event = threading.Event()
         self._worker = threading.Thread(target=self._batch_loop, daemon=True)
         self._worker.start()
@@ -69,8 +81,40 @@ class Scheduler:
     def _kv_target_decode(self, item: RequestItem) -> int:
         return self._prompt_word_count(item.prompt)
 
-    def submit_request(self, prompt: str, user_id: str, request_id: str) -> str:
-        item = RequestItem(request_id=request_id, prompt=prompt, user_id=user_id)
+    def _encode_prompt_tokens(self, prompt: str) -> List[int]:
+        """Match mlx_lm string encoding so batch and single-path prompts align."""
+        tok = self.tokenizer
+        bos = getattr(tok, "bos_token", None)
+        add_special_tokens = bos is None or not prompt.startswith(bos)
+        return list(tok.encode(prompt, add_special_tokens=add_special_tokens))
+
+    def _run_inference_batch(self, items: List[RequestItem]) -> None:
+        """One GPU forward pass for the whole batch (mlx_lm.batch_generate)."""
+        if not items:
+            return
+        now = time.monotonic()
+        for item in items:
+            item.ttft = now - item.created_at
+
+        prompts = [self._encode_prompt_tokens(item.prompt) for item in items]
+        max_tokens = [item.max_tokens for item in items]
+        batch_response = mlx_lm.batch_generate(
+            self.model,
+            self.tokenizer,
+            prompts,
+            max_tokens=max_tokens,
+            verbose=False,
+        )
+        for item, text in zip(items, batch_response.texts):
+            item.result = text
+            tokens_out = len(self.tokenizer.encode(text))
+            with self.lock:
+                self.total_tokens_generated += tokens_out
+                self.total_ttft += item.ttft
+
+    def submit_request(self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200) -> str:
+        self._model_ready.wait()
+        item = RequestItem(request_id=request_id, prompt=prompt, user_id=user_id, max_tokens=max_tokens)
         with self.lock:
             self.queue.append(item)
             if len(self.queue) > self.max_queue_length:
@@ -95,17 +139,27 @@ class Scheduler:
                 if self.total_processed > 0
                 else 0.0
             )
+            avg_ttft = (
+                self.total_ttft / self.total_processed
+                if self.total_processed > 0
+                else 0.0
+            )
             metrics = {
                 "total_batches": self.total_batches,
                 "avg_wait_time": avg_wait_time,
+                "avg_ttft": avg_ttft,
                 "max_queue_length": self.max_queue_length,
                 "total_preemptions": self.total_preemptions,
                 "total_prefill_chunks": self.total_prefill_chunks,
+                "total_tokens_generated": self.total_tokens_generated,
+                "memory_mb": self._process.memory_info().rss / 1024 / 1024,
             }
         metrics.update(self.kv.metrics())
         return metrics
 
     def _batch_loop(self) -> None:
+        self.model, self.tokenizer = mlx_lm.load(self._model_path)
+        self._model_ready.set()
         while not self._stop_event.is_set():
             batch = self._get_next_batch()
             if not batch:
@@ -171,8 +225,7 @@ class Scheduler:
         total_batch_wait = sum(now - item.created_at for item in working)
         decode_finished: List[RequestItem] = []
         try:
-            time.sleep(0.02 * len(working))
-            completed_decodes = 0
+            to_decode: List[RequestItem] = []
             for item in working:
                 if item.is_prefilling:
                     words = self._prompt_words(item.prompt)
@@ -190,15 +243,17 @@ class Scheduler:
                         with self.lock:
                             self.queue.append(item)
                     else:
-                        item.result = f"processed: {item.prompt}"
-                        item.done_event.set()
-                        decode_finished.append(item)
-                        completed_decodes += 1
+                        to_decode.append(item)
                 else:
-                    item.result = f"processed: {item.prompt}"
+                    to_decode.append(item)
+
+            completed_decodes = len(to_decode)
+            if to_decode:
+                self._run_inference_batch(to_decode)
+                for item in to_decode:
                     item.done_event.set()
                     decode_finished.append(item)
-                    completed_decodes += 1
+
             with self.lock:
                 self.total_batches += 1
                 self.total_processed += completed_decodes
