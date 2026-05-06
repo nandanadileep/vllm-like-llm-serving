@@ -9,6 +9,10 @@ Parity notes for writing about this stack versus vLLM:
   physical blocks, per-sequence block tables, ``resolve()`` page walks,
   fragmentation-style metrics). It is not wired into MLX attention; vLLM’s
   PagedAttention is GPU-side block tables inside the model.
+- **Optional ``MLX_GATHER_PAGED_KV=1``**: monkey-patches ``mlx_lm``’s
+  ``BatchKVCache`` with :mod:`server.gather_batch_paged_kv` so KV is also stored
+  in a physical block tensor and **re-materialized via ``mx.take`` each step**
+  before ``scaled_dot_product_attention`` (dense SDPA, paged backing store).
 - **Not attempted here**: CUDA kernels, tensor/pipeline parallel, prefix
   caching, speculative decoding, or cross-wave global scheduling (each HTTP wave
   still runs to completion before the next dequeue).
@@ -50,6 +54,13 @@ def _env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def _env_truthy(name: str) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 class Scheduler:
@@ -177,6 +188,10 @@ class Scheduler:
         return metrics
 
     def _batch_loop(self) -> None:
+        if _env_truthy("MLX_GATHER_PAGED_KV"):
+            from server.gather_batch_paged_kv import install_gather_batch_paged_kv
+
+            install_gather_batch_paged_kv()
         self.model, self.tokenizer = mlx_lm.load(self._model_path)
         self._model_ready.set()
         while not self._stop_event.is_set():
