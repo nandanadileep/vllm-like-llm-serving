@@ -89,5 +89,6 @@ class MetricsResponse(BaseModel):
     prefix_cache_shared_hits: int = 0
     prefix_cache_misses: int = 0
     prefix_cache_entries: int = 0
+    prefix_cache_matched_prefix_tokens: int = 0
     global_batch_steps: int = 0
     speculative_generations: int = 0

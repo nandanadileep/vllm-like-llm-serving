@@ -34,6 +34,7 @@ class PrefixKVCache:
         self.hits = 0
         self.shared_prefix_hits = 0
         self.misses = 0
+        self.matched_prefix_tokens = 0
 
     def _cache_expired(self, node: _TrieNode, now: float) -> bool:
         return (
@@ -66,40 +67,34 @@ class PrefixKVCache:
                 return
             self._clear_cache(min(nodes, key=lambda node: node.last_used))
 
-    def _longest_prefix_node(
-        self,
-        token_ids: List[int],
-        now: float,
-    ) -> Optional[_TrieNode]:
-        node = self._root
-        best: Optional[_TrieNode] = None
-        for token_id in token_ids:
-            child = node.children.get(int(token_id))
-            if child is None:
-                break
-            node = child
-            if self._cache_expired(node, now):
-                self._clear_cache(node)
-            if node.cache is not None:
-                best = node
-        return best
-
     def lookup_prefix(self, token_ids: List[int]) -> Tuple[Optional[Any], int]:
         """Return the longest cached prefix and the number of matched tokens."""
         if not self.enabled:
             return None, 0
         now = time.monotonic()
         with self._lock:
-            node = self._longest_prefix_node(token_ids, now)
-            if node is None:
+            node = self._root
+            best_cache: Optional[Any] = None
+            best_len = 0
+            for idx, token_id in enumerate(token_ids, start=1):
+                child = node.children.get(int(token_id))
+                if child is None:
+                    break
+                node = child
+                if self._cache_expired(node, now):
+                    self._clear_cache(node)
+                if node.cache is not None:
+                    best_cache = node.cache
+                    best_len = idx
+                    node.last_used = now
+            if best_cache is None:
                 self.misses += 1
                 return None, 0
-            node.last_used = now
-            if node.token_count == len(token_ids):
-                self.hits += 1
-            else:
+            self.hits += 1
+            self.matched_prefix_tokens += best_len
+            if best_len != len(token_ids):
                 self.shared_prefix_hits += 1
-            return node.cache, node.token_count
+            return best_cache, best_len
 
     def lookup(self, token_ids: List[int]) -> Optional[Any]:
         cache, _ = self.lookup_prefix(token_ids)
@@ -149,4 +144,5 @@ class PrefixKVCache:
                 "prefix_cache_shared_hits": self.shared_prefix_hits,
                 "prefix_cache_misses": self.misses,
                 "prefix_cache_entries": self._entry_count,
+                "prefix_cache_matched_prefix_tokens": self.matched_prefix_tokens,
             }
