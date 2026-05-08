@@ -206,6 +206,7 @@ class Scheduler:
             len(items) == 1
             and self._speculative_enabled()
             and items[0].prompt_cache is None
+            and items[0].partial_cache is None
         ):
             now = time.monotonic()
             items[0].ttft = now - items[0].created_at
@@ -229,13 +230,17 @@ class Scheduler:
                 prompts.append([])
                 per_item_caches.append(item.prompt_cache)
             else:
-                prompts.append(list(item.prompt_token_ids))
-                per_item_caches.append(None)
+                prompts.append(list(item.prompt_token_ids[item.prefill_chunk_start :]))
+                per_item_caches.append(item.partial_cache)
         max_tokens = [item.max_tokens for item in items]
         if self._prefix_cache.enabled:
             for idx, it in enumerate(items):
                 if per_item_caches[idx] is None:
-                    per_item_caches[idx] = self._prefix_cache.lookup(list(it.prompt_token_ids))
+                    cached = self._prefix_cache.lookup(list(it.prompt_token_ids))
+                    if cached is not None:
+                        per_item_caches[idx] = cached
+                        prompts[idx] = []
+                        it.prompt_cache = cached
         if any(c is not None for c in per_item_caches):
             prompt_caches = per_item_caches
         return_caches = self._prefix_cache.enabled
@@ -614,27 +619,39 @@ class Scheduler:
         total_batch_wait = sum(now - item.created_at for item in working)
         decode_finished: List[RequestItem] = []
         try:
-            prefilling = [item for item in working if item.is_prefilling]
-            ready = [item for item in working if not item.is_prefilling]
+            still_prefilling: List[RequestItem] = []
+            to_decode: List[RequestItem] = []
 
-            if prefilling:
-                self._run_prefill_chunk_batch(prefilling)
-
-            to_decode: List[RequestItem] = list(ready)
-            for item in prefilling:
+            for item in working:
                 if item.is_prefilling:
+                    nt = len(item.prompt_token_ids)
+                    chunk = min(
+                        self.prefill_chunk_size,
+                        max(0, nt - item.prefill_cursor),
+                    )
+                    item.prefill_chunk_start = item.prefill_cursor
+                    item.prefill_cursor += chunk
                     with self.lock:
-                        self.queue.append(item)
+                        self.total_prefill_chunks += 1
+                    if item.prefill_cursor >= nt:
+                        item.is_prefilling = False
+                        try:
+                            self.kv.allocate(item.request_id, num_tokens=self._kv_target_decode(item))
+                            to_decode.append(item)
+                        except BlockPoolExhausted:
+                            self._reset_prefill_state(item)
+                            with self.lock:
+                                self.queue.insert(0, item)
+                                self.total_preemptions += 1
+                    else:
+                        still_prefilling.append(item)
                 else:
-                    # Item completed a real prefill chunk and can decode now.
-                    try:
-                        self.kv.allocate(item.request_id, num_tokens=self._kv_target_decode(item))
-                        to_decode.append(item)
-                    except BlockPoolExhausted:
-                        self._reset_prefill_state(item)
-                        with self.lock:
-                            self.queue.insert(0, item)
-                            self.total_preemptions += 1
+                    to_decode.append(item)
+
+            self._run_prefill_chunks(still_prefilling)
+            for item in still_prefilling:
+                with self.lock:
+                    self.queue.append(item)
 
             completed_decodes = len(to_decode)
             if to_decode:
