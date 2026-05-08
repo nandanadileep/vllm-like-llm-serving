@@ -57,6 +57,8 @@ class RequestItem:
     max_tokens: int = 200
     ttft: Optional[float] = None
     prompt_cache: Optional[Any] = None
+    partial_cache: Optional[Any] = None
+    prefill_chunk_start: int = 0  # token index where the current chunk begins
 
 
 def _env_int(name: str, default: int) -> int:
@@ -310,8 +312,9 @@ class Scheduler:
                 item.is_prefilling = False
                 advanced.append(item)
                 continue
+            item.prefill_chunk_start = start
             prompts.append(chunk_tokens)
-            prompt_caches.append(item.prompt_cache)
+            prompt_caches.append(item.partial_cache)
             advanced.append(item)
         if not prompts:
             return advanced
@@ -336,11 +339,12 @@ class Scheduler:
             chunk = min(self.prefill_chunk_size, remaining)
             item.prefill_cursor += chunk
             if prefill_response.caches is not None:
-                item.prompt_cache = prefill_response.caches[cache_idx]
+                item.partial_cache = prefill_response.caches[cache_idx]
             with self.lock:
                 self.total_prefill_chunks += 1
             if item.prefill_cursor >= nt:
                 item.is_prefilling = False
+                item.prompt_cache = item.partial_cache
             cache_idx += 1
         return advanced
 
@@ -548,6 +552,8 @@ class Scheduler:
         item.prefill_cursor = 0
         item.is_prefilling = True
         item.prompt_cache = None
+        item.partial_cache = None
+        item.prefill_chunk_start = 0
 
     def _allocate_batch_with_preemption(self, batch: List[RequestItem]) -> List[RequestItem]:
         """Allocate KV for all items in batch, preempting latest-arrived on exhaustion."""
