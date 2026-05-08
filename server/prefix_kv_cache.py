@@ -1,20 +1,25 @@
 """MLX prompt KV cache for ``mlx_lm.batch_generate``.
 
-- **Exact match**: full prompt token ids as key.
-- **Shared prefix**: optional static prefix (see ``PREFIX_CACHE_SHARED_TEXT`` in
-  the scheduler) warmed once; any prompt whose tokens start with that prefix
-  can reuse the warmed ``prompt_caches`` for the prefix span.
+Stores prompt caches in a token trie so requests can reuse the longest cached
+prefix, not just exact full-prompt matches.
 
 Thread-safe; the scheduler worker performs writes.
 """
 
 from __future__ import annotations
 
-import hashlib
 import threading
 import time
-from collections import OrderedDict
-from typing import Any, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+
+@dataclass
+class _TrieNode:
+    children: Dict[int, "_TrieNode"] = field(default_factory=dict)
+    cache: Optional[Any] = None
+    last_used: float = 0.0
+    token_count: int = 0
 
 
 class PrefixKVCache:
@@ -23,40 +28,81 @@ class PrefixKVCache:
         self.max_entries = max(1, max_entries)
         self.ttl_sec = max(0.0, ttl_sec)
         self._lock = threading.Lock()
-        self._entries: "OrderedDict[str, tuple[Any, float]]" = OrderedDict()
+        self._root = _TrieNode()
+        self._entry_count = 0
         self.hits = 0
         self.shared_prefix_hits = 0
         self.misses = 0
 
-    @staticmethod
-    def _hash_token_ids(token_ids: List[int]) -> str:
-        h = hashlib.sha256()
-        for t in token_ids:
-            h.update(int(t).to_bytes(4, byteorder="little", signed=False))
-        return h.hexdigest()
+    def _cache_expired(self, node: _TrieNode, now: float) -> bool:
+        return (
+            node.cache is not None
+            and self.ttl_sec > 0
+            and (now - node.last_used) > self.ttl_sec
+        )
 
-    def _take(self, key: str) -> Optional[Any]:
-        entry = self._entries.get(key)
-        if entry is None:
-            return None
-        caches, ts = entry
-        if self.ttl_sec > 0 and (time.monotonic() - ts) > self.ttl_sec:
-            del self._entries[key]
-            return None
-        self._entries.move_to_end(key)
-        return caches
+    def _clear_cache(self, node: _TrieNode) -> None:
+        if node.cache is not None:
+            node.cache = None
+            node.last_used = 0.0
+            self._entry_count -= 1
+
+    def _cached_nodes(self) -> List[_TrieNode]:
+        nodes: List[_TrieNode] = []
+        stack = [self._root]
+        while stack:
+            node = stack.pop()
+            if node.cache is not None:
+                nodes.append(node)
+            stack.extend(node.children.values())
+        return nodes
+
+    def _evict_if_needed(self) -> None:
+        while self._entry_count > self.max_entries:
+            nodes = self._cached_nodes()
+            if not nodes:
+                self._entry_count = 0
+                return
+            self._clear_cache(min(nodes, key=lambda node: node.last_used))
+
+    def _longest_prefix_node(
+        self,
+        token_ids: List[int],
+        now: float,
+    ) -> Optional[_TrieNode]:
+        node = self._root
+        best: Optional[_TrieNode] = None
+        for token_id in token_ids:
+            child = node.children.get(int(token_id))
+            if child is None:
+                break
+            node = child
+            if self._cache_expired(node, now):
+                self._clear_cache(node)
+            if node.cache is not None:
+                best = node
+        return best
+
+    def lookup_prefix(self, token_ids: List[int]) -> Tuple[Optional[Any], int]:
+        """Return the longest cached prefix and the number of matched tokens."""
+        if not self.enabled:
+            return None, 0
+        now = time.monotonic()
+        with self._lock:
+            node = self._longest_prefix_node(token_ids, now)
+            if node is None:
+                self.misses += 1
+                return None, 0
+            node.last_used = now
+            if node.token_count == len(token_ids):
+                self.hits += 1
+            else:
+                self.shared_prefix_hits += 1
+            return node.cache, node.token_count
 
     def lookup(self, token_ids: List[int]) -> Optional[Any]:
-        if not self.enabled:
-            return None
-        key = self._hash_token_ids(token_ids)
-        with self._lock:
-            caches = self._take(key)
-            if caches is None:
-                self.misses += 1
-                return None
-            self.hits += 1
-            return caches
+        cache, _ = self.lookup_prefix(token_ids)
+        return cache
 
     def lookup_for_prompt(
         self,
@@ -64,34 +110,33 @@ class PrefixKVCache:
         shared_prefix: Optional[List[int]],
     ) -> Optional[Any]:
         """Prefer exact entry, then a warmed shared-prefix entry if applicable."""
-        if not self.enabled:
+        cache, matched_tokens = self.lookup_prefix(token_ids)
+        if cache is None:
             return None
-        with self._lock:
-            exact = self._take(self._hash_token_ids(token_ids))
-            if exact is not None:
-                self.hits += 1
-                return exact
-            if (
-                shared_prefix
-                and len(token_ids) >= len(shared_prefix)
-                and token_ids[: len(shared_prefix)] == shared_prefix
-            ):
-                shared = self._take(self._hash_token_ids(shared_prefix))
-                if shared is not None:
-                    self.shared_prefix_hits += 1
-                    return shared
-            self.misses += 1
-            return None
+        if matched_tokens == len(token_ids):
+            return cache
+        if shared_prefix and matched_tokens >= len(shared_prefix):
+            return cache
+        return None
 
     def store(self, token_ids: List[int], caches: Any) -> None:
         if not self.enabled or caches is None:
             return
-        key = self._hash_token_ids(token_ids)
+        now = time.monotonic()
         with self._lock:
-            self._entries[key] = (caches, time.monotonic())
-            self._entries.move_to_end(key)
-            while len(self._entries) > self.max_entries:
-                self._entries.popitem(last=False)
+            node = self._root
+            for idx, token_id in enumerate(token_ids, start=1):
+                token = int(token_id)
+                child = node.children.get(token)
+                if child is None:
+                    child = _TrieNode(token_count=idx)
+                    node.children[token] = child
+                node = child
+            if node.cache is None:
+                self._entry_count += 1
+            node.cache = caches
+            node.last_used = now
+            self._evict_if_needed()
 
     def metrics(self) -> dict[str, int]:
         with self._lock:
@@ -99,5 +144,5 @@ class PrefixKVCache:
                 "prefix_cache_hits": self.hits,
                 "prefix_cache_shared_hits": self.shared_prefix_hits,
                 "prefix_cache_misses": self.misses,
-                "prefix_cache_entries": len(self._entries),
+                "prefix_cache_entries": self._entry_count,
             }

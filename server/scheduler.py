@@ -236,11 +236,14 @@ class Scheduler:
         if self._prefix_cache.enabled:
             for idx, it in enumerate(items):
                 if per_item_caches[idx] is None:
-                    cached = self._prefix_cache.lookup(list(it.prompt_token_ids))
+                    cached, matched_tokens = self._prefix_cache.lookup_prefix(
+                        list(it.prompt_token_ids)
+                    )
                     if cached is not None:
                         per_item_caches[idx] = cached
-                        prompts[idx] = []
-                        it.prompt_cache = cached
+                        prompts[idx] = list(it.prompt_token_ids[matched_tokens:])
+                        if matched_tokens == len(it.prompt_token_ids):
+                            it.prompt_cache = cached
         if any(c is not None for c in per_item_caches):
             prompt_caches = per_item_caches
         return_caches = self._prefix_cache.enabled
@@ -492,9 +495,14 @@ class Scheduler:
         max_tokens = [it.max_tokens for it in kept]
         caches_arg: Optional[List[Any]]
         if self._prefix_cache.enabled:
-            caches_arg = [
-                self._prefix_cache.lookup(list(it.prompt_token_ids)) for it in kept
-            ]
+            caches_arg = []
+            for idx, it in enumerate(kept):
+                cache, matched_tokens = self._prefix_cache.lookup_prefix(
+                    list(it.prompt_token_ids)
+                )
+                caches_arg.append(cache)
+                if cache is not None:
+                    prompts[idx] = list(it.prompt_token_ids[matched_tokens:])
             if not any(c is not None for c in caches_arg):
                 caches_arg = None
         else:
