@@ -28,6 +28,7 @@ Parity notes for writing about this stack versus vLLM:
 """
 
 import os
+import queue as _queue_module
 import threading
 import time
 from dataclasses import dataclass, field
@@ -102,6 +103,7 @@ class Scheduler:
         self._draft_model_path: Optional[str] = None
         self._batch_spec_decode_unsupported = False
         self._model_ready = threading.Event()
+        self._stream_queues: Dict[str, "_queue_module.Queue[Optional[str]]"] = {}
         self.total_batches = 0
         self.total_wait_time = 0.0
         self.total_processed = 0
