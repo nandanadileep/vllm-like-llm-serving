@@ -1,0 +1,19 @@
+# Serving stack gaps
+
+## Solvable in this repo (MLX / Python)
+
+- [x] Gather-based paged KV backing store + dense SDPA (`MLX_GATHER_PAGED_KV`)
+- [x] Global in-flight `BatchGenerator` loop (`MLX_GLOBAL_BATCH_GENERATOR`)
+- [x] Exact-match prefix KV cache (`PREFIX_CACHE_ENABLED`)
+- [x] Shared static prefix warm + reuse (`PREFIX_CACHE_SHARED_TEXT`)
+- [x] Single-request speculative decode (`SPECULATIVE_DECODE` + `DRAFT_MODEL_PATH`)
+- [x] SSE passes `max_tokens`; optional real MLX streaming (`STREAM_USE_MLX`)
+- [x] Cross-thread MLX lock so streaming and worker do not race (`_mlx_lock`)
+- [x] Batched speculative decoding (multi-request draft model)
+- [ ] Richer API (OpenAI-shaped chat, tools) — optional product scope
+
+## Not goals here (need different stack or huge effort)
+
+- Fused in-kernel PagedAttention on CUDA / vLLM parity kernels
+- Tensor / pipeline parallel, multi-node orchestration
+- Full managed “product” serving (auth, quotas, multi-tenant) unless you expand scope
