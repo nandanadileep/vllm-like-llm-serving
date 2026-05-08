@@ -172,18 +172,31 @@ def chat_completion(url: str, model: str, prompt: str) -> str:
     return response.json()["choices"][0]["message"]["content"]
 
 
-def infer_vllm_model(vllm_url: str) -> str:
-    if os.getenv("VLLM_MODEL"):
-        return os.environ["VLLM_MODEL"]
+def request_error_summary(exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    ngrok_code = response.headers.get("ngrok-error-code")
+    if ngrok_code:
+        return f"{response.status_code} {response.reason} ({ngrok_code})"
+    return f"{response.status_code} {response.reason}"
+
+
+def get_vllm_model_or_error(vllm_url: str) -> tuple[str | None, str | None]:
+    models_url = f"{vllm_url.rstrip('/')}/models"
     try:
-        response = requests.get(f"{vllm_url.rstrip('/')}/models", timeout=30)
+        response = requests.get(models_url, timeout=30)
         response.raise_for_status()
         models = response.json().get("data", [])
-        if models:
-            return models[0]["id"]
-    except (KeyError, requests.RequestException):
-        pass
-    return "default"
+    except (ValueError, requests.RequestException) as exc:
+        if isinstance(exc, requests.RequestException):
+            return None, request_error_summary(exc)
+        return None, str(exc)
+    if os.getenv("VLLM_MODEL"):
+        return os.environ["VLLM_MODEL"], None
+    if models:
+        return models[0].get("id", "default"), None
+    return "default", None
 
 
 def print_side_by_side(left: str, right: str, width: int = 39) -> None:
@@ -206,9 +219,13 @@ def print_output_quality_comparison() -> None:
 
     vllm_url = vllm_url.rstrip("/")
     vllm_chat_url = f"{vllm_url}/chat/completions"
-    vllm_model = infer_vllm_model(vllm_url)
+    vllm_model, vllm_error = get_vllm_model_or_error(vllm_url)
     print(f"Local chat URL : {CHAT_URL}")
     print(f"vLLM chat URL  : {vllm_chat_url}")
+    if vllm_error is not None:
+        print(f"vLLM unavailable: {vllm_error}")
+        print("Skipping output comparison until VLLM_URL /models returns JSON.")
+        return
     print(f"vLLM model     : {vllm_model}")
     print()
 
@@ -221,7 +238,7 @@ def print_output_quality_comparison() -> None:
         try:
             vllm = chat_completion(vllm_chat_url, vllm_model, prompt)
         except requests.RequestException as exc:
-            vllm = f"[vLLM request failed: {exc}]"
+            vllm = f"[vLLM request failed: {request_error_summary(exc)}]"
         print(f"  {'Yours':<39} | {'vLLM':<39}")
         print_side_by_side(yours, vllm)
         print()
@@ -279,7 +296,7 @@ def print_comparison_table(results: list[dict]) -> None:
     if not vllm_url:
         print("  vLLM reference: set VLLM_URL=http://<host>/v1 to collect live numbers")
     else:
-        print("  (vLLM live numbers collected in Section D)")
+        print("  (vLLM live output comparison is attempted in Section D when reachable)")
 
     print()
     print_output_quality_comparison()
