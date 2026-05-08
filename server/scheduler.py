@@ -317,6 +317,10 @@ class Scheduler:
                 return_prompt_caches=True,
             )
         if response.caches is None:
+            # Avoid reprocessing the same chunk if this mlx_lm build declines
+            # to return prompt caches for prefill-only calls.
+            for item in items:
+                item.prefill_chunk_start = item.prefill_cursor
             return
         for item, cache in zip(items, response.caches):
             item.partial_cache = cache
