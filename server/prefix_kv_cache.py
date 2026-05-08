@@ -140,6 +140,5 @@ class PrefixKVCache:
                 "prefix_cache_shared_hits": self.shared_prefix_hits,
                 "prefix_cache_misses": self.misses,
                 "prefix_cache_entries": self._entry_count,
-                "matched_prefix_tokens": self.matched_prefix_tokens,
                 "prefix_cache_matched_prefix_tokens": self.matched_prefix_tokens,
             }
