@@ -241,12 +241,16 @@ def print_comparison_table(results: list[dict]) -> None:
     print(f"{'TTFT ratio (c4 avg_ttft / c1 avg_ttft)':<44} {ttft_ratio:>13.1f}x {'lower is better':>20}")
 
     print()
-    print("Section C — Raw throughput (clearly labeled hardware)")
+    print("Section C — Raw throughput (hardware-labeled)")
     print("-" * 84)
-    print(f"{'Tok/s @ C1':<12} Yours (M1 Air, 4-bit): {tok_s_1:>8.1f} | vLLM (H100, BF16): ~3000+")
-    print(f"{'Tok/s @ C8':<12} Yours (M1 Air, 4-bit): {tok_s_8:>8.1f} | vLLM (H100, BF16): ~8000+")
-    print(f"{'TTFT @ C1':<12} Yours (M1 Air):         {ttft_1:>7.2f}s | vLLM (GPU):        ~10-20ms")
-    print("NOTE: Hardware gap (M1 Air vs H100) dominates these numbers — see Section B for fair comparison")
+    print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C1: {tok_s_1:.1f} tok/s")
+    print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C8: {tok_s_8:.1f} tok/s")
+    print(f"  Yours TTFT @ C1: {ttft_1:.2f}s")
+    vllm_url = os.getenv("VLLM_URL")
+    if not vllm_url:
+        print("  vLLM reference: set VLLM_URL=http://<host>/v1 to collect live numbers")
+    else:
+        print("  (vLLM live numbers collected in Section D)")
 
     print()
     print_output_quality_comparison()
