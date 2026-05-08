@@ -32,6 +32,40 @@ class GenerateResponse(BaseModel):
     )
 
 
+class ChatCompletionMessage(BaseModel):
+    role: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str = Field(..., min_length=1)
+    messages: list[ChatCompletionMessage] = Field(..., min_length=1)
+    max_tokens: int = Field(default=200, ge=1, le=2048)
+    stream: bool = False
+
+
+class ChatCompletionResponseMessage(BaseModel):
+    role: str = "assistant"
+    content: str
+
+
+class ChatCompletionChoice(BaseModel):
+    index: int = 0
+    message: ChatCompletionResponseMessage
+    finish_reason: str = "stop"
+
+
+class ChatCompletionUsage(BaseModel):
+    completion_tokens: int
+
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    choices: list[ChatCompletionChoice]
+    usage: ChatCompletionUsage
+
+
 class MetricsResponse(BaseModel):
     total_batches: int
     avg_wait_time: float

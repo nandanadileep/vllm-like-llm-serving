@@ -93,7 +93,7 @@ class Scheduler:
             max_entries=_env_int("PREFIX_CACHE_MAX_ENTRIES", 256),
             ttl_sec=float(os.getenv("PREFIX_CACHE_TTL_SEC") or 0.0),
         )
-        self._model_path = os.getenv("MODEL_PATH", "mlx-community/Llama-3.2-3B-Instruct-4bit")
+        self._model_path = os.getenv("MODEL_PATH", "mlx-community/Llama-3.2-1B-Instruct-4bit")
         self.model = None
         self.tokenizer = None
         self._draft_model = None
@@ -134,6 +134,19 @@ class Scheduler:
         bos = getattr(tok, "bos_token", None)
         add_special_tokens = bos is None or not prompt.startswith(bos)
         return list(tok.encode(prompt, add_special_tokens=add_special_tokens))
+
+    def format_chat_prompt(self, messages: List[Dict[str, str]]) -> str:
+        """Render OpenAI-style chat messages through the loaded model template."""
+        self._model_ready.wait()
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def count_completion_tokens(self, text: str) -> int:
+        self._model_ready.wait()
+        return len(self.tokenizer.encode(text))
 
     def _speculative_enabled(self) -> bool:
         return _env_truthy("SPECULATIVE_DECODE") and bool(os.getenv("DRAFT_MODEL_PATH"))
@@ -353,10 +366,10 @@ class Scheduler:
         return item.result
 
     def submit_request_stream(
-        self, prompt: str, user_id: str, request_id: str
+        self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200
     ) -> Iterator[str]:
         """Run full batch inference, then yield stub result as word tokens (not incremental decode)."""
-        result = self.submit_request(prompt, user_id, request_id)
+        result = self.submit_request(prompt, user_id, request_id, max_tokens=max_tokens)
         for word in result.split():
             yield word
 

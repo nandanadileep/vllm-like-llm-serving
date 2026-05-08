@@ -7,6 +7,11 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from server.models import (
+    ChatCompletionChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionResponseMessage,
+    ChatCompletionUsage,
     GenerateRequest,
     GenerateResponse,
     HealthResponse,
@@ -73,6 +78,7 @@ def _sse_generate(payload: GenerateRequest):
         prompt=payload.prompt,
         user_id=payload.user_id,
         request_id=payload.request_id,
+        max_tokens=payload.max_tokens,
     ):
         chunk = json.dumps({"token": token, "done": False})
         yield f"data: {chunk}\n\n"
@@ -108,6 +114,63 @@ def generate_stream_get(
     return StreamingResponse(
         _sse_generate(payload),
         media_type="text/event-stream",
+    )
+
+
+def _chat_prompt(payload: ChatCompletionRequest) -> str:
+    messages = [
+        {"role": message.role, "content": message.content}
+        for message in payload.messages
+    ]
+    return scheduler.format_chat_prompt(messages)
+
+
+def _sse_chat_completion(payload: ChatCompletionRequest, request_id: str):
+    prompt = _chat_prompt(payload)
+    token_delay = _sse_token_delay_seconds()
+    first = True
+    for token in scheduler.submit_request_stream(
+        prompt=prompt,
+        user_id="openai-chat",
+        request_id=request_id,
+        max_tokens=payload.max_tokens,
+    ):
+        content = token if first else f" {token}"
+        chunk = json.dumps({"choices": [{"delta": {"content": content}}]})
+        yield f"data: {chunk}\n\n"
+        first = False
+        time.sleep(token_delay)
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/v1/chat/completions")
+def chat_completions(
+    payload: ChatCompletionRequest,
+) -> ChatCompletionResponse | StreamingResponse:
+    request_id = f"chatcmpl-{uuid4()}"
+    if payload.stream:
+        return StreamingResponse(
+            _sse_chat_completion(payload, request_id),
+            media_type="text/event-stream",
+        )
+
+    prompt = _chat_prompt(payload)
+    content = scheduler.submit_request(
+        prompt=prompt,
+        user_id="openai-chat",
+        request_id=request_id,
+        max_tokens=payload.max_tokens,
+    )
+    return ChatCompletionResponse(
+        id=request_id,
+        choices=[
+            ChatCompletionChoice(
+                message=ChatCompletionResponseMessage(content=content),
+            )
+        ],
+        usage=ChatCompletionUsage(
+            completion_tokens=scheduler.count_completion_tokens(content),
+        ),
     )
 
 
