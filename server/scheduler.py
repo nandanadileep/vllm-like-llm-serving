@@ -14,11 +14,15 @@ Parity notes for writing about this stack versus vLLM:
   in a physical block tensor and **re-materialized via ``mx.take`` each step**
   before ``scaled_dot_product_attention`` (dense SDPA, paged backing store).
 - **Optional features (env-gated)**:
-  - ``PREFIX_CACHE_ENABLED``: exact-match ``mlx_lm`` prompt cache reuse.
+  - ``PREFIX_CACHE_ENABLED``: ``mlx_lm`` prompt cache reuse (exact + optional
+    shared prefix via ``PREFIX_CACHE_SHARED_TEXT`` warm).
+  - ``STREAM_USE_MLX``: SSE yields real ``stream_generate`` segments (MLX lock
+    interleaves with the batch worker one step at a time).
   - ``MLX_GLOBAL_BATCH_GENERATOR``: one long-lived ``BatchGenerator`` loop
     (continuous admission) instead of wave-only ``batch_generate``.
-  - ``SPECULATIVE_DECODE`` + ``DRAFT_MODEL_PATH``: single-request speculative
-    path via ``mlx_lm.generate`` (batched requests still use ``batch_generate``).
+  - ``SPECULATIVE_DECODE`` + ``DRAFT_MODEL_PATH``: speculative decode via
+    ``mlx_lm.generate`` (single) and, when supported by installed ``mlx_lm``,
+    ``batch_generate`` (multi-request waves).
 - **Not attempted here**: CUDA kernels, tensor/pipeline parallel, or vLLM-style
   fused paged attention kernels.
 """
@@ -32,6 +36,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import mlx_lm
 import psutil
+from mlx_lm import stream_generate as mlx_stream_generate
 
 from server.paged_attention import BlockPoolExhausted, PagedKVCacheManager
 from server.prefix_kv_cache import PrefixKVCache
@@ -51,6 +56,7 @@ class RequestItem:
     is_prefilling: bool = True
     max_tokens: int = 200
     ttft: Optional[float] = None
+    prompt_cache: Optional[Any] = None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -92,6 +98,7 @@ class Scheduler:
         self.tokenizer = None
         self._draft_model = None
         self._draft_model_path: Optional[str] = None
+        self._batch_spec_decode_unsupported = False
         self._model_ready = threading.Event()
         self.total_batches = 0
         self.total_wait_time = 0.0
@@ -160,11 +167,31 @@ class Scheduler:
             self.speculative_generations += 1
         return text
 
+    def _batch_speculative_kwargs(self) -> Dict[str, Any]:
+        """Best-effort speculative kwargs for ``batch_generate``.
+
+        Some ``mlx_lm`` versions may not support batched speculative arguments.
+        We guard usage and permanently disable retries on first incompatibility.
+        """
+        if not self._speculative_enabled() or self._batch_spec_decode_unsupported:
+            return {}
+        self._ensure_draft_model()
+        if self._draft_model is None:
+            return {}
+        return {
+            "draft_model": self._draft_model,
+            "num_draft_tokens": _env_int("NUM_DRAFT_TOKENS", 4),
+        }
+
     def _run_inference_batch(self, items: List[RequestItem]) -> None:
         """Batched ``batch_generate``, with optional prefix caches and speculative fast path."""
         if not items:
             return
-        if len(items) == 1 and self._speculative_enabled():
+        if (
+            len(items) == 1
+            and self._speculative_enabled()
+            and items[0].prompt_cache is None
+        ):
             now = time.monotonic()
             items[0].ttft = now - items[0].created_at
             text = self._speculative_generate_single(items[0])
@@ -179,23 +206,55 @@ class Scheduler:
         for item in items:
             item.ttft = now - item.created_at
 
-        prompts = [list(item.prompt_token_ids) for item in items]
-        max_tokens = [item.max_tokens for item in items]
+        prompts: List[List[int]] = []
         prompt_caches: Optional[List[Any]] = None
+        per_item_caches: List[Optional[Any]] = []
+        for item in items:
+            if item.prompt_cache is not None:
+                prompts.append([])
+                per_item_caches.append(item.prompt_cache)
+            else:
+                prompts.append(list(item.prompt_token_ids))
+                per_item_caches.append(None)
+        max_tokens = [item.max_tokens for item in items]
         if self._prefix_cache.enabled:
-            per = [self._prefix_cache.lookup(list(it.prompt_token_ids)) for it in items]
-            if any(c is not None for c in per):
-                prompt_caches = per
+            for idx, it in enumerate(items):
+                if per_item_caches[idx] is None:
+                    per_item_caches[idx] = self._prefix_cache.lookup(list(it.prompt_token_ids))
+        if any(c is not None for c in per_item_caches):
+            prompt_caches = per_item_caches
         return_caches = self._prefix_cache.enabled
-        batch_response = mlx_lm.batch_generate(
-            self.model,
-            self.tokenizer,
-            prompts,
-            prompt_caches=prompt_caches,
-            max_tokens=max_tokens,
-            verbose=False,
-            return_prompt_caches=return_caches,
-        )
+        batch_kwargs: Dict[str, Any] = {
+            "prompt_caches": prompt_caches,
+            "max_tokens": max_tokens,
+            "verbose": False,
+            "return_prompt_caches": return_caches,
+        }
+        batch_kwargs.update(self._batch_speculative_kwargs())
+        try:
+            batch_response = mlx_lm.batch_generate(
+                self.model,
+                self.tokenizer,
+                prompts,
+                **batch_kwargs,
+            )
+            if "draft_model" in batch_kwargs:
+                with self.lock:
+                    self.speculative_generations += len(items)
+        except TypeError:
+            if "draft_model" not in batch_kwargs:
+                raise
+            # Installed mlx_lm does not accept batched speculative args.
+            self._batch_spec_decode_unsupported = True
+            batch_response = mlx_lm.batch_generate(
+                self.model,
+                self.tokenizer,
+                prompts,
+                prompt_caches=prompt_caches,
+                max_tokens=max_tokens,
+                verbose=False,
+                return_prompt_caches=return_caches,
+            )
         for item, text in zip(items, batch_response.texts):
             item.result = text
             tokens_out = len(self.tokenizer.encode(text))
@@ -205,7 +264,72 @@ class Scheduler:
         if return_caches and batch_response.caches is not None:
             for item, caches in zip(items, batch_response.caches):
                 if caches is not None:
+                    item.prompt_cache = caches
                     self._prefix_cache.store(list(item.prompt_token_ids), caches)
+
+    def _run_prefill_chunk_batch(self, items: List[RequestItem]) -> List[RequestItem]:
+        """Run true chunked prefill by extending per-request prompt caches."""
+        if not items:
+            return []
+        prompts: List[List[int]] = []
+        prompt_caches: List[Optional[Any]] = []
+        advanced: List[RequestItem] = []
+        for item in items:
+            if item.prompt_cache is None and self._prefix_cache.enabled:
+                cached = self._prefix_cache.lookup(list(item.prompt_token_ids))
+                if cached is not None:
+                    item.prompt_cache = cached
+                    item.prefill_cursor = len(item.prompt_token_ids)
+                    item.is_prefilling = False
+                    advanced.append(item)
+                    continue
+            nt = len(item.prompt_token_ids)
+            remaining = max(0, nt - item.prefill_cursor)
+            if remaining <= 0:
+                item.is_prefilling = False
+                advanced.append(item)
+                continue
+            chunk = min(self.prefill_chunk_size, remaining)
+            start = item.prefill_cursor
+            end = start + chunk
+            chunk_tokens = list(item.prompt_token_ids[start:end])
+            if not chunk_tokens:
+                item.is_prefilling = False
+                advanced.append(item)
+                continue
+            prompts.append(chunk_tokens)
+            prompt_caches.append(item.prompt_cache)
+            advanced.append(item)
+        if not prompts:
+            return advanced
+        # max_tokens=0 forces prompt processing without decoding, so each cycle
+        # can interleave prefill work and decode work across requests.
+        prefill_response = mlx_lm.batch_generate(
+            self.model,
+            self.tokenizer,
+            prompts,
+            prompt_caches=prompt_caches,
+            max_tokens=[0] * len(prompts),
+            verbose=False,
+            return_prompt_caches=True,
+        )
+        cache_idx = 0
+        for item in advanced:
+            nt = len(item.prompt_token_ids)
+            remaining = max(0, nt - item.prefill_cursor)
+            if remaining <= 0:
+                item.is_prefilling = False
+                continue
+            chunk = min(self.prefill_chunk_size, remaining)
+            item.prefill_cursor += chunk
+            if prefill_response.caches is not None:
+                item.prompt_cache = prefill_response.caches[cache_idx]
+            with self.lock:
+                self.total_prefill_chunks += 1
+            if item.prefill_cursor >= nt:
+                item.is_prefilling = False
+            cache_idx += 1
+        return advanced
 
     def submit_request(self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200) -> str:
         self._model_ready.wait()
@@ -409,6 +533,7 @@ class Scheduler:
         """KV was freed; restart prefill bookkeeping (no swap-to-CPU)."""
         item.prefill_cursor = 0
         item.is_prefilling = True
+        item.prompt_cache = None
 
     def _allocate_batch_with_preemption(self, batch: List[RequestItem]) -> List[RequestItem]:
         """Allocate KV for all items in batch, preempting latest-arrived on exhaustion."""
@@ -445,26 +570,27 @@ class Scheduler:
         total_batch_wait = sum(now - item.created_at for item in working)
         decode_finished: List[RequestItem] = []
         try:
-            to_decode: List[RequestItem] = []
-            for item in working:
+            prefilling = [item for item in working if item.is_prefilling]
+            ready = [item for item in working if not item.is_prefilling]
+
+            if prefilling:
+                self._run_prefill_chunk_batch(prefilling)
+
+            to_decode: List[RequestItem] = list(ready)
+            for item in prefilling:
                 if item.is_prefilling:
-                    nt = len(item.prompt_token_ids)
-                    chunk = min(
-                        self.prefill_chunk_size,
-                        max(0, nt - item.prefill_cursor),
-                    )
-                    item.prefill_cursor += chunk
                     with self.lock:
-                        self.total_prefill_chunks += 1
-                    if item.prefill_cursor >= nt:
-                        item.is_prefilling = False
-                    if item.is_prefilling:
-                        with self.lock:
-                            self.queue.append(item)
-                    else:
-                        to_decode.append(item)
+                        self.queue.append(item)
                 else:
-                    to_decode.append(item)
+                    # Item completed a real prefill chunk and can decode now.
+                    try:
+                        self.kv.allocate(item.request_id, num_tokens=self._kv_target_decode(item))
+                        to_decode.append(item)
+                    except BlockPoolExhausted:
+                        self._reset_prefill_state(item)
+                        with self.lock:
+                            self.queue.insert(0, item)
+                            self.total_preemptions += 1
 
             completed_decodes = len(to_decode)
             if to_decode:
