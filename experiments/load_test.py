@@ -223,22 +223,22 @@ def print_comparison_table(results: list[dict]) -> None:
 
     print("Section B — Scheduling efficiency")
     print("-" * 84)
-    print(f"{'Metric':<44} {'Yours':>14} {'vLLM reference':>20}")
+    print(f"{'Metric':<44} {'Yours':>14}")
     print("-" * 84)
 
     # Throughput
     tok_s_1 = next((r["throughput_tok_s"] for r in results if r["concurrency"] == 1), 0)
     tok_s_8 = next((r["throughput_tok_s"] for r in results if r["concurrency"] == 8), 0)
     batching_gain = tok_s_8 / tok_s_1 if tok_s_1 > 0 else 0
-    print(f"{'Tok/s @ concurrency 1':<44} {tok_s_1:>14.1f} {'baseline':>20}")
-    print(f"{'Tok/s @ concurrency 8':<44} {tok_s_8:>14.1f} {'batched':>20}")
-    print(f"{'Batching gain (c8 tok/s / c1 tok/s)':<44} {batching_gain:>13.1f}x {'~8-15x (1B)':>20}")
+    print(f"{'Tok/s @ concurrency 1':<44} {tok_s_1:>14.1f}")
+    print(f"{'Tok/s @ concurrency 8':<44} {tok_s_8:>14.1f}")
+    print(f"{'Batching gain (c8 tok/s / c1 tok/s)':<44} {batching_gain:>13.1f}x")
 
     # TTFT
     ttft_1 = next((r["avg_ttft"] for r in results if r["concurrency"] == 1), 0)
     ttft_4 = next((r["avg_ttft"] for r in results if r["concurrency"] == 4), 0)
     ttft_ratio = ttft_4 / ttft_1 if ttft_1 > 0 else 0
-    print(f"{'TTFT ratio (c4 avg_ttft / c1 avg_ttft)':<44} {ttft_ratio:>13.1f}x {'lower is better':>20}")
+    print(f"{'TTFT ratio (c4 avg_ttft / c1 avg_ttft)':<44} {ttft_ratio:>13.1f}x")
 
     print()
     print("Section C — Raw throughput (hardware-labeled)")
