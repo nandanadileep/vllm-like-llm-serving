@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Query
@@ -66,14 +65,8 @@ def generate(payload: GenerateRequest) -> GenerateResponse:
     # Keep external response shape stable: one object with `response` per request.
     return GenerateResponse(response=result)
 
-
-def _sse_token_delay_seconds() -> float:
-    return _env_float("STREAM_TOKEN_DELAY", 0.02)
-
-
 def _sse_generate(payload: GenerateRequest):
     print(f"[stream] request from {payload.user_id}")
-    token_delay = _sse_token_delay_seconds()
     for token in scheduler.submit_request_stream_tokens(
         prompt=payload.prompt,
         user_id=payload.user_id,
@@ -82,7 +75,6 @@ def _sse_generate(payload: GenerateRequest):
     ):
         chunk = json.dumps({"token": token, "done": False})
         yield f"data: {chunk}\n\n"
-        time.sleep(token_delay)
     final = json.dumps({"token": "", "done": True})
     yield f"data: {final}\n\n"
 
@@ -127,7 +119,6 @@ def _chat_prompt(payload: ChatCompletionRequest) -> str:
 
 def _sse_chat_completion(payload: ChatCompletionRequest, request_id: str):
     prompt = _chat_prompt(payload)
-    token_delay = _sse_token_delay_seconds()
     for token in scheduler.submit_request_stream_tokens(
         prompt=prompt,
         user_id="openai-chat",
@@ -136,7 +127,6 @@ def _sse_chat_completion(payload: ChatCompletionRequest, request_id: str):
     ):
         chunk = json.dumps({"choices": [{"delta": {"content": token}}]})
         yield f"data: {chunk}\n\n"
-        time.sleep(token_delay)
     yield "data: [DONE]\n\n"
 
 
