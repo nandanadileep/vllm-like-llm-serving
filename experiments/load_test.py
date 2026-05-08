@@ -204,7 +204,7 @@ def print_comparison_table(results: list[dict]) -> None:
     print(f"{'[x]':<4} {'Speculative decoding':<28} {'draft model':<24} {'mlx_lm draft model':<24}")
     print(f"{'[x]':<4} {'Preemption':<28} {'swap/requeue':<24} {'requeue':<24}")
     print(f"{'[x]':<4} {'Chunked prefill (sched)':<28} {'model-level':<24} {'cursor-tracked (scheduler only)':<24}")
-    print(f"{'[ ]':<4} {'OpAI API':<28} {'yes':<24} {'in progress':<24}")
+    print(f"{'[x]':<4} {'OpenAI API':<28} {'yes':<24} {'/v1/chat/completions':<24}")
     print(f"{'[ ]':<4} {'Fused block attention':<28} {'CUDA kernel':<24} {'N/A (Metal/MLX limitation)':<24}")
     print(f"{'[ ]':<4} {'Tensor parallelism':<28} {'yes':<24} {'N/A':<24}")
     print()
