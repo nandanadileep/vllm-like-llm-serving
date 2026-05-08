@@ -81,6 +81,8 @@ def fetch_metrics() -> dict:
 def run_level(concurrency: int) -> dict:
     m_before = fetch_metrics()
     tokens_before = m_before.get("total_tokens_generated", 0)
+    processed_before = m_before.get("total_processed", 0)
+    ttft_sum_before = m_before.get("avg_ttft", 0.0) * processed_before
 
     latencies = []
     start_wall = time.time()
@@ -93,6 +95,14 @@ def run_level(concurrency: int) -> dict:
     m_after = fetch_metrics()
     tokens_after = m_after.get("total_tokens_generated", 0)
     tokens_this_level = tokens_after - tokens_before
+    processed_after = m_after.get("total_processed", 0)
+    ttft_sum_after = m_after.get("avg_ttft", 0.0) * processed_after
+    processed_this_level = processed_after - processed_before
+    avg_ttft_this_level = (
+        (ttft_sum_after - ttft_sum_before) / processed_this_level
+        if processed_this_level > 0
+        else 0.0
+    )
 
     latencies_sorted = sorted(latencies)
     n = len(latencies_sorted)
@@ -102,7 +112,8 @@ def run_level(concurrency: int) -> dict:
         "p50": latencies_sorted[int(n * 0.50)],
         "p90": latencies_sorted[int(n * 0.90)],
         "p99": latencies_sorted[max(0, int(n * 0.99) - 1)],
-        "avg_ttft": m_after.get("avg_ttft", 0.0),
+        "avg_ttft": avg_ttft_this_level,
+        "processed": processed_this_level,
         "throughput_req_s": REQUESTS_PER_LEVEL / elapsed,
         "throughput_tok_s": tokens_this_level / elapsed if elapsed > 0 else 0,
         "elapsed": elapsed,
@@ -113,6 +124,7 @@ def run_level(concurrency: int) -> dict:
     print(f"  P50 latency  : {result['p50']:.3f}s")
     print(f"  P90 latency  : {result['p90']:.3f}s")
     print(f"  P99 latency  : {result['p99']:.3f}s")
+    print(f"  Avg TTFT     : {result['avg_ttft']:.3f}s")
     print(f"  Req/s        : {result['throughput_req_s']:.3f}")
     print(f"  Tok/s        : {result['throughput_tok_s']:.1f}")
     print()

@@ -68,6 +68,7 @@ class ChatCompletionResponse(BaseModel):
 
 class MetricsResponse(BaseModel):
     total_batches: int
+    total_processed: int = 0
     avg_wait_time: float
     avg_ttft: float = 0.0
     max_queue_length: int

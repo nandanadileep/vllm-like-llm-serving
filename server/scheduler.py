@@ -387,6 +387,7 @@ class Scheduler:
             )
             metrics = {
                 "total_batches": self.total_batches,
+                "total_processed": self.total_processed,
                 "avg_wait_time": avg_wait_time,
                 "avg_ttft": avg_ttft,
                 "max_queue_length": self.max_queue_length,
