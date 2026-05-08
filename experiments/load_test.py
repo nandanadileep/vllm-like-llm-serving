@@ -160,7 +160,7 @@ def run_level(concurrency: int) -> dict:
     return result
 
 
-def chat_completion(url: str, model: str, prompt: str) -> str:
+def chat_completion_payload(url: str, model: str, prompt: str) -> dict:
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -169,7 +169,48 @@ def chat_completion(url: str, model: str, prompt: str) -> str:
     }
     response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    return response.json()
+
+
+def chat_completion(url: str, model: str, prompt: str) -> str:
+    return chat_completion_payload(url, model, prompt)["choices"][0]["message"]["content"]
+
+
+def send_vllm_request(i: int, vllm_chat_url: str, vllm_model: str) -> tuple[float, int]:
+    prompt = PROMPTS[i % len(PROMPTS)]
+    start = time.time()
+    payload = chat_completion_payload(vllm_chat_url, vllm_model, prompt)
+    elapsed = time.time() - start
+    completion_tokens = payload.get("usage", {}).get("completion_tokens", 0)
+    return elapsed, completion_tokens
+
+
+def run_level_vllm(concurrency: int, vllm_chat_url: str, vllm_model: str) -> dict:
+    latencies = []
+    completion_tokens = 0
+    start_wall = time.time()
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [
+            executor.submit(send_vllm_request, i, vllm_chat_url, vllm_model)
+            for i in range(REQUESTS_PER_LEVEL)
+        ]
+        for future in futures:
+            latency, tokens = future.result()
+            latencies.append(latency)
+            completion_tokens += tokens
+    elapsed = time.time() - start_wall
+    latencies_sorted = sorted(latencies)
+    n = len(latencies_sorted)
+    return {
+        "concurrency": concurrency,
+        "avg_latency": sum(latencies) / n,
+        "p50": latencies_sorted[int(n * 0.50)],
+        "p90": latencies_sorted[int(n * 0.90)],
+        "p99": latencies_sorted[max(0, int(n * 0.99) - 1)],
+        "throughput_req_s": REQUESTS_PER_LEVEL / elapsed,
+        "throughput_tok_s": completion_tokens / elapsed if elapsed > 0 else 0,
+        "elapsed": elapsed,
+    }
 
 
 def request_error_summary(exc: requests.RequestException) -> str:
@@ -244,7 +285,17 @@ def print_output_quality_comparison() -> None:
         print()
 
 
-def print_comparison_table(results: list[dict]) -> None:
+def value_for(results: list[dict], concurrency: int, key: str, default: float = 0.0) -> float:
+    return next((r[key] for r in results if r["concurrency"] == concurrency), default)
+
+
+def format_number(value: float, suffix: str = "", precision: int = 1) -> str:
+    if value <= 0:
+        return "n/a"
+    return f"{value:.{precision}f}{suffix}"
+
+
+def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> None:
     print("=" * 84)
     print("COMPARISON TABLE — Llama-3.2-1B serving stack")
     print("=" * 84)
@@ -269,22 +320,51 @@ def print_comparison_table(results: list[dict]) -> None:
 
     print("Section B — Scheduling efficiency")
     print("-" * 84)
-    print(f"{'Metric':<44} {'Yours':>14}")
+    print(f"{'Metric':<44} {'Yours':>14} {'vLLM (e2e)':>14}")
     print("-" * 84)
 
     # Throughput
-    tok_s_1 = next((r["throughput_tok_s"] for r in results if r["concurrency"] == 1), 0)
-    tok_s_8 = next((r["throughput_tok_s"] for r in results if r["concurrency"] == 8), 0)
+    tok_s_1 = value_for(results, 1, "throughput_tok_s")
+    tok_s_8 = value_for(results, 8, "throughput_tok_s")
+    vllm_tok_s_1 = value_for(vllm_results, 1, "throughput_tok_s")
+    vllm_tok_s_8 = value_for(vllm_results, 8, "throughput_tok_s")
     batching_gain = tok_s_8 / tok_s_1 if tok_s_1 > 0 else 0
-    print(f"{'Tok/s @ concurrency 1':<44} {tok_s_1:>14.1f}")
-    print(f"{'Tok/s @ concurrency 8':<44} {tok_s_8:>14.1f}")
-    print(f"{'Batching gain (c8 tok/s / c1 tok/s)':<44} {batching_gain:>13.1f}x")
+    vllm_batching_gain = vllm_tok_s_8 / vllm_tok_s_1 if vllm_tok_s_1 > 0 else 0
+    print(
+        f"{'Tok/s @ C1':<44} {format_number(tok_s_1):>14} "
+        f"{format_number(vllm_tok_s_1):>14}"
+    )
+    print(
+        f"{'Tok/s @ C8':<44} {format_number(tok_s_8):>14} "
+        f"{format_number(vllm_tok_s_8):>14}"
+    )
+    print(
+        f"{'Batching gain (C8/C1 tok/s)':<44} {format_number(batching_gain, 'x'):>14} "
+        f"{format_number(vllm_batching_gain, 'x'):>14}"
+    )
 
     # TTFT
-    ttft_1 = next((r["avg_ttft"] for r in results if r["concurrency"] == 1), 0)
-    ttft_4 = next((r["avg_ttft"] for r in results if r["concurrency"] == 4), 0)
+    ttft_1 = value_for(results, 1, "avg_ttft")
+    ttft_4 = value_for(results, 4, "avg_ttft")
+    p50_1 = value_for(results, 1, "p50")
+    p50_8 = value_for(results, 8, "p50")
+    vllm_p50_1 = value_for(vllm_results, 1, "p50")
+    vllm_p50_8 = value_for(vllm_results, 8, "p50")
     ttft_ratio = ttft_4 / ttft_1 if ttft_1 > 0 else 0
-    print(f"{'TTFT ratio (c4 avg_ttft / c1 avg_ttft)':<44} {ttft_ratio:>13.1f}x")
+    vllm_p50_4 = value_for(vllm_results, 4, "p50")
+    vllm_e2e_ratio = vllm_p50_4 / vllm_p50_1 if vllm_p50_1 > 0 else 0
+    print(
+        f"{'P50 latency @ C1':<44} {format_number(p50_1, 's', 2):>14} "
+        f"{format_number(vllm_p50_1, 's', 2):>14}"
+    )
+    print(
+        f"{'P50 latency @ C8':<44} {format_number(p50_8, 's', 2):>14} "
+        f"{format_number(vllm_p50_8, 's', 2):>14}"
+    )
+    print(
+        f"{'TTFT ratio C4/C1 (vLLM: e2e p50 ratio)':<44} {format_number(ttft_ratio, 'x'):>14} "
+        f"{format_number(vllm_e2e_ratio, 'x'):>14}"
+    )
 
     print()
     print("Section C — Raw throughput (hardware-labeled)")
@@ -292,11 +372,15 @@ def print_comparison_table(results: list[dict]) -> None:
     print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C1: {tok_s_1:.1f} tok/s")
     print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C8: {tok_s_8:.1f} tok/s")
     print(f"  Yours TTFT @ C1: {ttft_1:.2f}s")
-    vllm_url = os.getenv("VLLM_URL")
-    if not vllm_url:
-        print("  vLLM reference: set VLLM_URL=http://<host>/v1 to collect live numbers")
+    if vllm_results:
+        print(f"  vLLM @ C1: {vllm_tok_s_1:.1f} tok/s")
+        print(f"  vLLM @ C8: {vllm_tok_s_8:.1f} tok/s")
     else:
-        print("  (vLLM live output comparison is attempted in Section D when reachable)")
+        vllm_url = os.getenv("VLLM_URL")
+        if not vllm_url:
+            print("  vLLM reference: set VLLM_URL=http://<host>/v1 to collect live numbers")
+        else:
+            print("  vLLM throughput skipped because VLLM_URL is not reachable")
 
     print()
     print_output_quality_comparison()
@@ -315,7 +399,29 @@ def main() -> None:
     for concurrency in CONCURRENCY_LEVELS:
         results.append(run_level(concurrency))
 
-    print_comparison_table(results)
+    vllm_results = []
+    vllm_url = os.getenv("VLLM_URL")
+    if vllm_url:
+        vllm_url = vllm_url.rstrip("/")
+        vllm_chat_url = f"{vllm_url}/chat/completions"
+        vllm_model, vllm_error = get_vllm_model_or_error(vllm_url)
+        if vllm_error is not None:
+            print(f"\nSkipping vLLM sweep: {vllm_error}")
+        else:
+            print(f"\nRunning same sweep against vLLM at {vllm_chat_url}")
+            for concurrency in CONCURRENCY_LEVELS:
+                result = run_level_vllm(concurrency, vllm_chat_url, vllm_model)
+                vllm_results.append(result)
+                print(f"vLLM concurrency: {concurrency}")
+                print(f"  Avg latency  : {result['avg_latency']:.3f}s")
+                print(f"  P50 latency  : {result['p50']:.3f}s")
+                print(f"  P90 latency  : {result['p90']:.3f}s")
+                print(f"  P99 latency  : {result['p99']:.3f}s")
+                print(f"  Req/s        : {result['throughput_req_s']:.3f}")
+                print(f"  Tok/s        : {result['throughput_tok_s']:.1f}")
+                print()
+
+    print_comparison_table(results, vllm_results)
 
 
 if __name__ == "__main__":
