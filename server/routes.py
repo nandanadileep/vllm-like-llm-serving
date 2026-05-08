@@ -130,7 +130,7 @@ def _sse_chat_completion(payload: ChatCompletionRequest, request_id: str):
     yield "data: [DONE]\n\n"
 
 
-@router.post("/v1/chat/completions")
+@router.post("/v1/chat/completions", response_model=None)
 def chat_completions(
     payload: ChatCompletionRequest,
 ) -> ChatCompletionResponse | StreamingResponse:
