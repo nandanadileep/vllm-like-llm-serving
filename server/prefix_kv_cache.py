@@ -1,10 +1,11 @@
-"""Exact-match MLX prompt KV cache for ``mlx_lm.batch_generate``.
+"""MLX prompt KV cache for ``mlx_lm.batch_generate``.
 
-Stores ``prompt_caches`` entries keyed by the full tokenized prompt (SHA-256
-over token ids). This is intentionally **narrow**: identical prompts reuse KV;
-prefix-of-prompt sharing without a warm pass is not implemented here.
+- **Exact match**: full prompt token ids as key.
+- **Shared prefix**: optional static prefix (see ``PREFIX_CACHE_SHARED_TEXT`` in
+  the scheduler) warmed once; any prompt whose tokens start with that prefix
+  can reuse the warmed ``prompt_caches`` for the prefix span.
 
-Thread-safe for concurrent readers; the scheduler worker performs writes.
+Thread-safe; the scheduler worker performs writes.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ class PrefixKVCache:
         self._lock = threading.Lock()
         self._entries: "OrderedDict[str, tuple[Any, float]]" = OrderedDict()
         self.hits = 0
+        self.shared_prefix_hits = 0
         self.misses = 0
 
     @staticmethod
@@ -33,23 +35,53 @@ class PrefixKVCache:
             h.update(int(t).to_bytes(4, byteorder="little", signed=False))
         return h.hexdigest()
 
+    def _take(self, key: str) -> Optional[Any]:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        caches, ts = entry
+        if self.ttl_sec > 0 and (time.monotonic() - ts) > self.ttl_sec:
+            del self._entries[key]
+            return None
+        self._entries.move_to_end(key)
+        return caches
+
     def lookup(self, token_ids: List[int]) -> Optional[Any]:
         if not self.enabled:
             return None
         key = self._hash_token_ids(token_ids)
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is None:
+            caches = self._take(key)
+            if caches is None:
                 self.misses += 1
                 return None
-            caches, ts = entry
-            if self.ttl_sec > 0 and (time.monotonic() - ts) > self.ttl_sec:
-                del self._entries[key]
-                self.misses += 1
-                return None
-            self._entries.move_to_end(key)
             self.hits += 1
             return caches
+
+    def lookup_for_prompt(
+        self,
+        token_ids: List[int],
+        shared_prefix: Optional[List[int]],
+    ) -> Optional[Any]:
+        """Prefer exact entry, then a warmed shared-prefix entry if applicable."""
+        if not self.enabled:
+            return None
+        with self._lock:
+            exact = self._take(self._hash_token_ids(token_ids))
+            if exact is not None:
+                self.hits += 1
+                return exact
+            if (
+                shared_prefix
+                and len(token_ids) >= len(shared_prefix)
+                and token_ids[: len(shared_prefix)] == shared_prefix
+            ):
+                shared = self._take(self._hash_token_ids(shared_prefix))
+                if shared is not None:
+                    self.shared_prefix_hits += 1
+                    return shared
+            self.misses += 1
+            return None
 
     def store(self, token_ids: List[int], caches: Any) -> None:
         if not self.enabled or caches is None:
@@ -65,6 +97,7 @@ class PrefixKVCache:
         with self._lock:
             return {
                 "prefix_cache_hits": self.hits,
+                "prefix_cache_shared_hits": self.shared_prefix_hits,
                 "prefix_cache_misses": self.misses,
                 "prefix_cache_entries": len(self._entries),
             }
