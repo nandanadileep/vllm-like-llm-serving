@@ -282,6 +282,30 @@ class Scheduler:
                     item.prompt_cache = caches
                     self._prefix_cache.store(list(item.prompt_token_ids), caches)
 
+    def _run_prefill_chunks(self, items: List[RequestItem]) -> None:
+        if not items:
+            return
+        prompts = [
+            list(item.prompt_token_ids[item.prefill_chunk_start : item.prefill_cursor])
+            for item in items
+        ]
+        caches = [item.partial_cache for item in items]
+        has_any_cache = any(c is not None for c in caches)
+        response = mlx_lm.batch_generate(
+            self.model,
+            self.tokenizer,
+            prompts,
+            prompt_caches=caches if has_any_cache else None,
+            max_tokens=[1] * len(items),  # generate 1 token just to get the cache back
+            verbose=False,
+            return_prompt_caches=True,
+        )
+        if response.caches is None:
+            return
+        for item, cache in zip(items, response.caches):
+            item.partial_cache = cache
+            item.prefill_chunk_start = item.prefill_cursor
+
     def _run_prefill_chunk_batch(self, items: List[RequestItem]) -> List[RequestItem]:
         """Run true chunked prefill by extending per-request prompt caches."""
         if not items:
