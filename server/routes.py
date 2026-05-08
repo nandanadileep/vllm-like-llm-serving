@@ -74,7 +74,7 @@ def _sse_token_delay_seconds() -> float:
 def _sse_generate(payload: GenerateRequest):
     print(f"[stream] request from {payload.user_id}")
     token_delay = _sse_token_delay_seconds()
-    for token in scheduler.submit_request_stream(
+    for token in scheduler.submit_request_stream_tokens(
         prompt=payload.prompt,
         user_id=payload.user_id,
         request_id=payload.request_id,
@@ -128,17 +128,14 @@ def _chat_prompt(payload: ChatCompletionRequest) -> str:
 def _sse_chat_completion(payload: ChatCompletionRequest, request_id: str):
     prompt = _chat_prompt(payload)
     token_delay = _sse_token_delay_seconds()
-    first = True
-    for token in scheduler.submit_request_stream(
+    for token in scheduler.submit_request_stream_tokens(
         prompt=prompt,
         user_id="openai-chat",
         request_id=request_id,
         max_tokens=payload.max_tokens,
     ):
-        content = token if first else f" {token}"
-        chunk = json.dumps({"choices": [{"delta": {"content": content}}]})
+        chunk = json.dumps({"choices": [{"delta": {"content": token}}]})
         yield f"data: {chunk}\n\n"
-        first = False
         time.sleep(token_delay)
     yield "data: [DONE]\n\n"
 

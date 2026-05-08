@@ -352,13 +352,56 @@ class Scheduler:
             raise RuntimeError("Scheduler completed request without a result")
         return item.result
 
-    def submit_request_stream(
+    def submit_request_stream_tokens(
         self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200
     ) -> Iterator[str]:
-        """Run full batch inference, then yield stub result as word tokens (not incremental decode)."""
+        self._model_ready.wait()
+        if self.use_global_batch:
+            # Real token-by-token streaming from the global batch loop.
+            q: "_queue_module.Queue[Optional[str]]" = _queue_module.Queue()
+            with self.lock:
+                self._stream_queues[request_id] = q
+
+            prompt_token_ids = self._encode_prompt_tokens(prompt)
+            item = RequestItem(
+                request_id=request_id,
+                prompt=prompt,
+                user_id=user_id,
+                prompt_token_ids=prompt_token_ids,
+                max_tokens=max_tokens,
+                is_prefilling=False,
+                prefill_cursor=len(prompt_token_ids),
+            )
+            with self.lock:
+                self.queue.append(item)
+                if len(self.queue) > self.max_queue_length:
+                    self.max_queue_length = len(self.queue)
+
+            try:
+                while True:
+                    token = q.get()
+                    if token is None:
+                        break
+                    yield token
+            finally:
+                with self.lock:
+                    self._stream_queues.pop(request_id, None)
+            return
+
+        # Fallback: full generation, word-split (non-global-batch mode).
         result = self.submit_request(prompt, user_id, request_id, max_tokens=max_tokens)
         for word in result.split():
             yield word
+
+    def submit_request_stream(
+        self, prompt: str, user_id: str, request_id: str, max_tokens: int = 200
+    ) -> Iterator[str]:
+        yield from self.submit_request_stream_tokens(
+            prompt=prompt,
+            user_id=user_id,
+            request_id=request_id,
+            max_tokens=max_tokens,
+        )
 
     def get_metrics(self) -> dict[str, float | int]:
         with self.lock:
