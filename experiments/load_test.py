@@ -17,30 +17,59 @@ MAX_TOKENS = 50
 OUTPUT_QUALITY_MAX_TOKENS = 120
 LOCAL_CHAT_MODEL = os.getenv("MODEL_PATH", "mlx-community/Llama-3.2-1B-Instruct-4bit")
 
-PROMPTS = [
-    "Explain what a transformer model is in one paragraph.",
-    "What is the difference between supervised and unsupervised learning?",
-    "Describe how attention mechanisms work in neural networks.",
-    "What are the main components of a large language model?",
-    "Explain the concept of tokenization in NLP.",
-    "What is gradient descent and how does it work?",
-    "Describe the encoder-decoder architecture.",
-    "What is the role of embeddings in language models?",
-    "Explain what fine-tuning a language model means.",
-    "What is the difference between GPT and BERT?",
-    "How does beam search work in text generation?",
-    "What is temperature in the context of language model sampling?",
-    "Explain what RLHF means and why it is used.",
-    "What is a context window in a language model?",
-    "How does quantization reduce model size?",
-    "What is the purpose of layer normalization?",
-    "Explain what key-value cache does during inference.",
-    "What is the difference between prefill and decode phases?",
-    "How does continuous batching improve LLM throughput?",
-    "What is PagedAttention and why was it introduced?",
+SHORT_PROMPTS = [
+    "What is a transformer?",
+    "Define tokenization.",
+    "What does RLHF stand for?",
+    "What is a context window?",
+    "What is quantization in ML?",
 ]
 
-OUTPUT_QUALITY_PROMPTS = PROMPTS[:5]
+MEDIUM_PROMPTS = [
+    "Explain how attention mechanisms work in neural networks.",
+    "What is the difference between supervised and unsupervised learning?",
+    "Describe the encoder-decoder architecture used in seq2seq models.",
+    "How does continuous batching improve LLM serving throughput?",
+    "What is PagedAttention and why was it introduced in vLLM?",
+    "Explain the difference between the prefill and decode phases in LLM inference.",
+    "What is speculative decoding and how does it reduce latency?",
+    "Describe how key-value caching works during autoregressive generation.",
+    "What is the role of positional encoding in transformer models?",
+    "How does beam search differ from greedy decoding?",
+]
+
+LONG_PROMPTS = [
+    (
+        "You are an expert in distributed systems. Explain in detail how a "
+        "production LLM serving system handles thousands of concurrent requests, "
+        "covering request queuing, memory management, batching strategies, and "
+        "how it avoids out-of-memory errors when many long sequences arrive at once."
+    ),
+    (
+        "Compare and contrast vLLM, TensorRT-LLM, and llama.cpp as inference "
+        "engines. Cover: hardware requirements, memory management approach, "
+        "batching strategy, streaming support, ease of deployment, and which use "
+        "cases each is best suited for."
+    ),
+    (
+        "Walk through the full lifecycle of a single inference request in a "
+        "system like vLLM: from the moment the HTTP request arrives, through "
+        "scheduling, prefill, decode, KV cache management, to streaming the "
+        "response back to the client. Be specific about what happens at each step."
+    ),
+]
+
+SHARED_PREFIX = "You are a concise technical assistant. Answer in 2-3 sentences only.\n\n"
+PREFIX_PROMPTS = [
+    SHARED_PREFIX + "What is gradient descent?",
+    SHARED_PREFIX + "What is layer normalization?",
+    SHARED_PREFIX + "What is the softmax function?",
+    SHARED_PREFIX + "What is a residual connection?",
+    SHARED_PREFIX + "What is temperature sampling?",
+]
+
+PROMPTS = SHORT_PROMPTS + MEDIUM_PROMPTS + LONG_PROMPTS + PREFIX_PROMPTS
+OUTPUT_QUALITY_PROMPTS = MEDIUM_PROMPTS[:5]
 
 
 def send_request(i: int) -> float:
