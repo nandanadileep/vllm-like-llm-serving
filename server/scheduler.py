@@ -553,9 +553,13 @@ class Scheduler:
                 cache, matched_tokens = self._prefix_cache.lookup_prefix(
                     list(it.prompt_token_ids)
                 )
-                caches_arg.append(cache)
-                if cache is not None:
+                # BatchGenerator cannot admit an empty prompt segment. If a
+                # cache covers the whole prompt, fall back to the full prompt.
+                if cache is not None and matched_tokens < len(it.prompt_token_ids):
+                    caches_arg.append(cache)
                     prompts[idx] = list(it.prompt_token_ids[matched_tokens:])
+                else:
+                    caches_arg.append(None)
             if not any(c is not None for c in caches_arg):
                 caches_arg = None
         else:
