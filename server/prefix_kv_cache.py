@@ -20,6 +20,8 @@ class _TrieNode:
     cache: Optional[Any] = None
     last_used: float = 0.0
     token_count: int = 0
+    parent: Optional["_TrieNode"] = None
+    token: Optional[int] = None
 
 
 class PrefixKVCache:
@@ -30,6 +32,7 @@ class PrefixKVCache:
         self._block_size = 16
         self._lock = threading.Lock()
         self._root = _TrieNode()
+        self._leaves: List[_TrieNode] = []
         self._entry_count = 0
         self.hits = 0
         self.shared_prefix_hits = 0
@@ -43,29 +46,28 @@ class PrefixKVCache:
             and (now - node.last_used) > self.ttl_sec
         )
 
+    def _prune_empty_ancestors(self, node: _TrieNode) -> None:
+        while node.parent is not None and node.cache is None and not node.children:
+            parent = node.parent
+            if node.token is not None and parent.children.get(node.token) is node:
+                del parent.children[node.token]
+            node = parent
+
     def _clear_cache(self, node: _TrieNode) -> None:
         if node.cache is not None:
             node.cache = None
             node.last_used = 0.0
             self._entry_count -= 1
-
-    def _cached_nodes(self) -> List[_TrieNode]:
-        nodes: List[_TrieNode] = []
-        stack = [self._root]
-        while stack:
-            node = stack.pop()
-            if node.cache is not None:
-                nodes.append(node)
-            stack.extend(node.children.values())
-        return nodes
+            if node in self._leaves:
+                self._leaves.remove(node)
+            self._prune_empty_ancestors(node)
 
     def _evict_if_needed(self) -> None:
         while self._entry_count > self.max_entries:
-            nodes = self._cached_nodes()
-            if not nodes:
+            if not self._leaves:
                 self._entry_count = 0
                 return
-            self._clear_cache(min(nodes, key=lambda node: node.last_used))
+            self._clear_cache(min(self._leaves, key=lambda node: node.last_used))
 
     def lookup_prefix(self, token_ids: List[int]) -> Tuple[Optional[Any], int]:
         """Return the longest cached prefix and the number of matched tokens."""
@@ -105,15 +107,8 @@ class PrefixKVCache:
         token_ids: List[int],
         shared_prefix: Optional[List[int]],
     ) -> Optional[Any]:
-        """Prefer exact entry, then a warmed shared-prefix entry if applicable."""
-        cache, matched_tokens = self.lookup_prefix(token_ids)
-        if cache is None:
-            return None
-        if matched_tokens == len(token_ids):
-            return cache
-        if shared_prefix and matched_tokens >= len(shared_prefix):
-            return cache
-        return None
+        """Compatibility wrapper; the trie already finds the best prefix."""
+        return self.lookup(token_ids)
 
     def store(self, token_ids: List[int], caches: Any) -> None:
         if not self.enabled or caches is None:
@@ -128,11 +123,12 @@ class PrefixKVCache:
                 token = int(token_id)
                 child = node.children.get(token)
                 if child is None:
-                    child = _TrieNode(token_count=idx)
+                    child = _TrieNode(token_count=idx, parent=node, token=token)
                     node.children[token] = child
                 node = child
             if node.cache is None:
                 self._entry_count += 1
+                self._leaves.append(node)
             node.cache = caches
             node.last_used = now
             self._evict_if_needed()
@@ -144,5 +140,6 @@ class PrefixKVCache:
                 "prefix_cache_shared_hits": self.shared_prefix_hits,
                 "prefix_cache_misses": self.misses,
                 "prefix_cache_entries": self._entry_count,
+                "matched_prefix_tokens": self.matched_prefix_tokens,
                 "prefix_cache_matched_prefix_tokens": self.matched_prefix_tokens,
             }
