@@ -296,15 +296,26 @@ class Scheduler:
         ]
         caches = [item.partial_cache for item in items]
         has_any_cache = any(c is not None for c in caches)
-        response = mlx_lm.batch_generate(
-            self.model,
-            self.tokenizer,
-            prompts,
-            prompt_caches=caches if has_any_cache else None,
-            max_tokens=[1] * len(items),  # generate 1 token just to get the cache back
-            verbose=False,
-            return_prompt_caches=True,
-        )
+        try:
+            response = mlx_lm.batch_generate(
+                self.model,
+                self.tokenizer,
+                prompts,
+                prompt_caches=caches if has_any_cache else None,
+                max_tokens=[0] * len(items),
+                verbose=False,
+                return_prompt_caches=True,
+            )
+        except (AssertionError, ValueError):
+            response = mlx_lm.batch_generate(
+                self.model,
+                self.tokenizer,
+                prompts,
+                prompt_caches=caches if has_any_cache else None,
+                max_tokens=[1] * len(items),
+                verbose=False,
+                return_prompt_caches=True,
+            )
         if response.caches is None:
             return
         for item, cache in zip(items, response.caches):
