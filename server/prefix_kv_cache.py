@@ -29,7 +29,6 @@ class PrefixKVCache:
         self.enabled = enabled
         self.max_entries = max(1, max_entries)
         self.ttl_sec = max(0.0, ttl_sec)
-        self._block_size = 16
         self._lock = threading.Lock()
         self._root = _TrieNode()
         self._leaves: List[_TrieNode] = []
@@ -113,13 +112,12 @@ class PrefixKVCache:
     def store(self, token_ids: List[int], caches: Any) -> None:
         if not self.enabled or caches is None:
             return
-        aligned_len = (len(token_ids) // self._block_size) * self._block_size
-        if aligned_len == 0:
+        if not token_ids:
             return
         now = time.monotonic()
         with self._lock:
             node = self._root
-            for idx, token_id in enumerate(token_ids[:aligned_len], start=1):
+            for idx, token_id in enumerate(token_ids, start=1):
                 token = int(token_id)
                 child = node.children.get(token)
                 if child is None:
