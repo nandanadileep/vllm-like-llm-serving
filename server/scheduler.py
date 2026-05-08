@@ -437,7 +437,12 @@ class Scheduler:
                     item.ttft = time.monotonic() - item.created_at
                     ttft_marked.add(uid)
                 if r.finish_reason is None:
-                    gen_tokens.setdefault(uid, []).append(int(r.token))
+                    token = int(r.token)
+                    gen_tokens.setdefault(uid, []).append(token)
+                    token_text = self.tokenizer.decode([token])
+                    q = self._stream_queues.get(item.request_id)
+                    if q is not None:
+                        q.put(token_text)
                     continue
                 if r.finish_reason != "stop":
                     gen_tokens.setdefault(uid, []).append(int(r.token))
@@ -454,6 +459,9 @@ class Scheduler:
                     self.total_ttft += item.ttft
                 if self._prefix_cache.enabled and r.prompt_cache is not None:
                     self._prefix_cache.store(list(item.prompt_token_ids), r.prompt_cache)
+                q = self._stream_queues.pop(item.request_id, None)
+                if q is not None:
+                    q.put(None)
                 self.kv.free(item.request_id)
                 item.done_event.set()
                 uid_to_item.pop(uid, None)
