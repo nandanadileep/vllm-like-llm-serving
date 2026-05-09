@@ -225,8 +225,11 @@ def request_error_summary(exc: requests.RequestException) -> str:
     return f"{response.status_code} {response.reason}"
 
 
-def get_vllm_model_or_error(vllm_url: str) -> tuple[str | None, str | None]:
-    models_url = f"{vllm_url.rstrip('/')}/models"
+def get_openai_model_or_error(
+    base_url: str,
+    model_env_var: str,
+) -> tuple[str | None, str | None]:
+    models_url = f"{base_url.rstrip('/')}/models"
     try:
         response = requests.get(models_url, timeout=30)
         response.raise_for_status()
@@ -235,11 +238,19 @@ def get_vllm_model_or_error(vllm_url: str) -> tuple[str | None, str | None]:
         if isinstance(exc, requests.RequestException):
             return None, request_error_summary(exc)
         return None, str(exc)
-    if os.getenv("VLLM_MODEL"):
-        return os.environ["VLLM_MODEL"], None
+    if os.getenv(model_env_var):
+        return os.environ[model_env_var], None
     if models:
         return models[0].get("id", "default"), None
     return "default", None
+
+
+def get_vllm_model_or_error(vllm_url: str) -> tuple[str | None, str | None]:
+    return get_openai_model_or_error(vllm_url, "VLLM_MODEL")
+
+
+def get_cpu_model_or_error(cpu_url: str) -> tuple[str | None, str | None]:
+    return get_openai_model_or_error(cpu_url, "CPU_MODEL")
 
 
 def print_side_by_side(left: str, right: str, width: int = 39) -> None:
@@ -297,7 +308,11 @@ def format_number(value: float, suffix: str = "", precision: int = 1) -> str:
     return f"{value:.{precision}f}{suffix}"
 
 
-def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> None:
+def print_comparison_table(
+    results: list[dict],
+    vllm_results: list[dict],
+    cpu_results: list[dict],
+) -> None:
     print("=" * 84)
     print("COMPARISON TABLE - Llama-3.2-1B serving stack")
     print("=" * 84)
@@ -322,7 +337,7 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
 
     print("Section B - Scheduling efficiency")
     print("-" * 84)
-    print(f"{'Metric':<44} {'Yours':>14} {'vLLM (e2e)':>14}")
+    print(f"{'Metric':<34} {'Yours':>14} {'vLLM (e2e)':>14} {'llama.cpp CPU':>14}")
     print("-" * 84)
 
     # Throughput
@@ -330,19 +345,22 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
     tok_s_8 = value_for(results, 8, "throughput_tok_s")
     vllm_tok_s_1 = value_for(vllm_results, 1, "throughput_tok_s")
     vllm_tok_s_8 = value_for(vllm_results, 8, "throughput_tok_s")
+    cpu_tok_s_1 = value_for(cpu_results, 1, "throughput_tok_s")
+    cpu_tok_s_8 = value_for(cpu_results, 8, "throughput_tok_s")
     batching_gain = tok_s_8 / tok_s_1 if tok_s_1 > 0 else 0
     vllm_batching_gain = vllm_tok_s_8 / vllm_tok_s_1 if vllm_tok_s_1 > 0 else 0
+    cpu_batching_gain = cpu_tok_s_8 / cpu_tok_s_1 if cpu_tok_s_1 > 0 else 0
     print(
-        f"{'Tok/s @ C1':<44} {format_number(tok_s_1):>14} "
-        f"{format_number(vllm_tok_s_1):>14}"
+        f"{'Tok/s @ C1':<34} {format_number(tok_s_1):>14} "
+        f"{format_number(vllm_tok_s_1):>14} {format_number(cpu_tok_s_1):>14}"
     )
     print(
-        f"{'Tok/s @ C8':<44} {format_number(tok_s_8):>14} "
-        f"{format_number(vllm_tok_s_8):>14}"
+        f"{'Tok/s @ C8':<34} {format_number(tok_s_8):>14} "
+        f"{format_number(vllm_tok_s_8):>14} {format_number(cpu_tok_s_8):>14}"
     )
     print(
-        f"{'Batching gain (C8/C1 tok/s)':<44} {format_number(batching_gain, 'x'):>14} "
-        f"{format_number(vllm_batching_gain, 'x'):>14}"
+        f"{'Batching gain (C8/C1 tok/s)':<34} {format_number(batching_gain, 'x'):>14} "
+        f"{format_number(vllm_batching_gain, 'x'):>14} {format_number(cpu_batching_gain, 'x'):>14}"
     )
 
     # TTFT
@@ -352,20 +370,24 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
     p50_8 = value_for(results, 8, "p50")
     vllm_p50_1 = value_for(vllm_results, 1, "p50")
     vllm_p50_8 = value_for(vllm_results, 8, "p50")
+    cpu_p50_1 = value_for(cpu_results, 1, "p50")
+    cpu_p50_8 = value_for(cpu_results, 8, "p50")
     ttft_ratio = ttft_4 / ttft_1 if ttft_1 > 0 else 0
     vllm_p50_4 = value_for(vllm_results, 4, "p50")
     vllm_e2e_ratio = vllm_p50_4 / vllm_p50_1 if vllm_p50_1 > 0 else 0
+    cpu_p50_4 = value_for(cpu_results, 4, "p50")
+    cpu_e2e_ratio = cpu_p50_4 / cpu_p50_1 if cpu_p50_1 > 0 else 0
     print(
-        f"{'P50 latency @ C1':<44} {format_number(p50_1, 's', 2):>14} "
-        f"{format_number(vllm_p50_1, 's', 2):>14}"
+        f"{'P50 latency @ C1':<34} {format_number(p50_1, 's', 2):>14} "
+        f"{format_number(vllm_p50_1, 's', 2):>14} {format_number(cpu_p50_1, 's', 2):>14}"
     )
     print(
-        f"{'P50 latency @ C8':<44} {format_number(p50_8, 's', 2):>14} "
-        f"{format_number(vllm_p50_8, 's', 2):>14}"
+        f"{'P50 latency @ C8':<34} {format_number(p50_8, 's', 2):>14} "
+        f"{format_number(vllm_p50_8, 's', 2):>14} {format_number(cpu_p50_8, 's', 2):>14}"
     )
     print(
-        f"{'TTFT ratio C4/C1 (vLLM: e2e p50 ratio)':<44} {format_number(ttft_ratio, 'x'):>14} "
-        f"{format_number(vllm_e2e_ratio, 'x'):>14}"
+        f"{'TTFT ratio C4/C1 (others: e2e)':<34} {format_number(ttft_ratio, 'x'):>14} "
+        f"{format_number(vllm_e2e_ratio, 'x'):>14} {format_number(cpu_e2e_ratio, 'x'):>14}"
     )
 
     print()
@@ -383,12 +405,25 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
             print("  vLLM reference: set VLLM_URL=http://<host>/v1 to collect live numbers")
         else:
             print("  vLLM throughput skipped because VLLM_URL is not reachable")
+    if cpu_results:
+        print(f"  llama.cpp CPU @ C1: {cpu_tok_s_1:.1f} tok/s")
+        print(f"  llama.cpp CPU @ C8: {cpu_tok_s_8:.1f} tok/s")
+    else:
+        cpu_url = os.getenv("CPU_URL")
+        if not cpu_url:
+            print("  CPU baseline: set CPU_URL=http://127.0.0.1:8001/v1 to collect live numbers")
+        else:
+            print("  CPU baseline skipped because CPU_URL is not reachable")
 
     print()
     print_output_quality_comparison()
 
 
-def save_results(results: list[dict], vllm_results: list[dict]) -> None:
+def save_results(
+    results: list[dict],
+    vllm_results: list[dict],
+    cpu_results: list[dict],
+) -> None:
     payload = {
         "config": {
             "concurrency_levels": CONCURRENCY_LEVELS,
@@ -396,9 +431,11 @@ def save_results(results: list[dict], vllm_results: list[dict]) -> None:
             "max_tokens": MAX_TOKENS,
             "local_model": LOCAL_CHAT_MODEL,
             "vllm_url": os.getenv("VLLM_URL"),
+            "cpu_url": os.getenv("CPU_URL"),
         },
         "local": results,
         "vllm": vllm_results,
+        "cpu": cpu_results,
     }
     os.makedirs(os.path.dirname(RESULTS_JSON) or ".", exist_ok=True)
     with open(RESULTS_JSON, "w", encoding="utf-8") as f:
@@ -441,8 +478,30 @@ def main() -> None:
                 print(f"  Tok/s        : {result['throughput_tok_s']:.1f}")
                 print()
 
-    print_comparison_table(results, vllm_results)
-    save_results(results, vllm_results)
+    cpu_results = []
+    cpu_url = os.getenv("CPU_URL")
+    if cpu_url:
+        cpu_url = cpu_url.rstrip("/")
+        cpu_chat_url = f"{cpu_url}/chat/completions"
+        cpu_model, cpu_error = get_cpu_model_or_error(cpu_url)
+        if cpu_error is not None:
+            print(f"\nSkipping CPU sweep: {cpu_error}")
+        else:
+            print(f"\nRunning same sweep against llama.cpp CPU at {cpu_chat_url}")
+            for concurrency in CONCURRENCY_LEVELS:
+                result = run_level_vllm(concurrency, cpu_chat_url, cpu_model)
+                cpu_results.append(result)
+                print(f"CPU concurrency: {concurrency}")
+                print(f"  Avg latency  : {result['avg_latency']:.3f}s")
+                print(f"  P50 latency  : {result['p50']:.3f}s")
+                print(f"  P90 latency  : {result['p90']:.3f}s")
+                print(f"  P99 latency  : {result['p99']:.3f}s")
+                print(f"  Req/s        : {result['throughput_req_s']:.3f}")
+                print(f"  Tok/s        : {result['throughput_tok_s']:.1f}")
+                print()
+
+    print_comparison_table(results, vllm_results, cpu_results)
+    save_results(results, vllm_results, cpu_results)
 
 
 if __name__ == "__main__":
