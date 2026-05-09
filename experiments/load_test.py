@@ -251,7 +251,7 @@ def print_side_by_side(left: str, right: str, width: int = 39) -> None:
 
 
 def print_output_quality_comparison() -> None:
-    print("Section D — Output quality")
+    print("Section D - Output quality")
     print("-" * 84)
     vllm_url = os.getenv("VLLM_URL")
     if not vllm_url:
@@ -297,14 +297,14 @@ def format_number(value: float, suffix: str = "", precision: int = 1) -> str:
 
 def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> None:
     print("=" * 84)
-    print("COMPARISON TABLE — Llama-3.2-1B serving stack")
+    print("COMPARISON TABLE - Llama-3.2-1B serving stack")
     print("=" * 84)
     print("  Fair section  : Section B compares scheduling ratios, not raw hardware speed")
     print("  Raw section   : Section C labels hardware explicitly")
     print(f"  Max tokens    : {MAX_TOKENS}")
     print()
 
-    print("Section A — Feature parity checklist")
+    print("Section A - Feature parity checklist")
     print("-" * 84)
     print(f"{'':<4} {'Feature':<28} {'vLLM':<24} {'Yours':<24}")
     print(f"{'[x]':<4} {'Continuous batching':<28} {'BatchGenerator':<24} {'MLX_GLOBAL_BATCH_GENERATOR':<24}")
@@ -318,7 +318,7 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
     print(f"{'[ ]':<4} {'Tensor parallelism':<28} {'yes':<24} {'N/A':<24}")
     print()
 
-    print("Section B — Scheduling efficiency")
+    print("Section B - Scheduling efficiency")
     print("-" * 84)
     print(f"{'Metric':<44} {'Yours':>14} {'vLLM (e2e)':>14}")
     print("-" * 84)
@@ -367,7 +367,7 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
     )
 
     print()
-    print("Section C — Raw throughput (hardware-labeled)")
+    print("Section C - Raw throughput (hardware-labeled)")
     print("-" * 84)
     print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C1: {tok_s_1:.1f} tok/s")
     print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C8: {tok_s_8:.1f} tok/s")
