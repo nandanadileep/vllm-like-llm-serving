@@ -1,3 +1,4 @@
+import json
 import os
 import textwrap
 import time
@@ -16,6 +17,7 @@ REQUEST_TIMEOUT_SECONDS = 300
 MAX_TOKENS = 50
 OUTPUT_QUALITY_MAX_TOKENS = 120
 LOCAL_CHAT_MODEL = os.getenv("MODEL_PATH", "mlx-community/Llama-3.2-1B-Instruct-4bit")
+RESULTS_JSON = os.getenv("LOAD_TEST_RESULTS_JSON", "experiments/latest_results.json")
 
 SHORT_PROMPTS = [
     "What is a transformer?",
@@ -386,6 +388,24 @@ def print_comparison_table(results: list[dict], vllm_results: list[dict]) -> Non
     print_output_quality_comparison()
 
 
+def save_results(results: list[dict], vllm_results: list[dict]) -> None:
+    payload = {
+        "config": {
+            "concurrency_levels": CONCURRENCY_LEVELS,
+            "requests_per_level": REQUESTS_PER_LEVEL,
+            "max_tokens": MAX_TOKENS,
+            "local_model": LOCAL_CHAT_MODEL,
+            "vllm_url": os.getenv("VLLM_URL"),
+        },
+        "local": results,
+        "vllm": vllm_results,
+    }
+    os.makedirs(os.path.dirname(RESULTS_JSON) or ".", exist_ok=True)
+    with open(RESULTS_JSON, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"\nSaved results JSON: {RESULTS_JSON}")
+
+
 def main() -> None:
     print("Running load test against /generate")
     print(f"Target       : {GENERATE_URL}")
@@ -422,6 +442,7 @@ def main() -> None:
                 print()
 
     print_comparison_table(results, vllm_results)
+    save_results(results, vllm_results)
 
 
 if __name__ == "__main__":
