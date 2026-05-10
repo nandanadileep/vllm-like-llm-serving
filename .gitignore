@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.log
 .DS_Store
+.cursor/
 .gstack/
 .venv/
 venv/
