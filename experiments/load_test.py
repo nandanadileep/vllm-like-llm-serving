@@ -293,7 +293,7 @@ def print_output_quality_comparison() -> None:
             vllm = chat_completion(vllm_chat_url, vllm_model, prompt)
         except requests.RequestException as exc:
             vllm = f"[vLLM request failed: {request_error_summary(exc)}]"
-        print(f"  {'Yours':<39} | {'vLLM':<39}")
+        print(f"  {'Near vLLM Stack':<39} | {'vLLM':<39}")
         print_side_by_side(yours, vllm)
         print()
 
@@ -323,7 +323,7 @@ def print_comparison_table(
 
     print("Section A - Feature parity checklist")
     print("-" * 84)
-    print(f"{'':<4} {'Feature':<28} {'vLLM':<24} {'Yours':<24}")
+    print(f"{'':<4} {'Feature':<28} {'vLLM':<24} {'Near vLLM Stack':<24}")
     print(f"{'[x]':<4} {'Continuous batching':<28} {'BatchGenerator':<24} {'MLX_GLOBAL_BATCH_GENERATOR':<24}")
     print(f"{'[x]':<4} {'Paged KV memory manager':<28} {'GPU block tables':<24} {'Python block pool + optional mx.take':<24}")
     print(f"{'[x]':<4} {'Prefix KV cache':<28} {'Radix cache':<24} {'Radix trie':<24}")
@@ -337,7 +337,7 @@ def print_comparison_table(
 
     print("Section B - Scheduling efficiency")
     print("-" * 84)
-    print(f"{'Metric':<34} {'Yours':>14} {'vLLM (e2e)':>14} {'llama.cpp CPU':>14}")
+    print(f"{'Metric':<34} {'Near vLLM Stack':>15} {'vLLM (e2e)':>14} {'llama.cpp CPU':>14}")
     print("-" * 84)
 
     # Throughput
@@ -393,9 +393,9 @@ def print_comparison_table(
     print()
     print("Section C - Raw throughput (hardware-labeled)")
     print("-" * 84)
-    print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C1: {tok_s_1:.1f} tok/s")
-    print(f"  Yours (M1 Air, Llama-3.2-1B 4-bit) @ C8: {tok_s_8:.1f} tok/s")
-    print(f"  Yours TTFT @ C1: {ttft_1:.2f}s")
+    print(f"  Near vLLM Stack (M1 Air, Llama-3.2-1B 4-bit) @ C1: {tok_s_1:.1f} tok/s")
+    print(f"  Near vLLM Stack (M1 Air, Llama-3.2-1B 4-bit) @ C8: {tok_s_8:.1f} tok/s")
+    print(f"  Near vLLM Stack TTFT @ C1: {ttft_1:.2f}s")
     if vllm_results:
         print(f"  vLLM @ C1: {vllm_tok_s_1:.1f} tok/s")
         print(f"  vLLM @ C8: {vllm_tok_s_8:.1f} tok/s")

@@ -24,7 +24,7 @@ def plot_metric(
 ) -> None:
     plt.figure(figsize=(7, 4.5))
     x, y = series(local, key)
-    plt.plot(x, y, marker="o", color="tab:blue", label="Yours (M1 Air)")
+    plt.plot(x, y, marker="o", color="tab:blue", label="M1 Air 4-bit")
     if vllm:
         x_vllm, y_vllm = series(vllm, key)
         plt.plot(x_vllm, y_vllm, marker="o", color="tab:orange", label="vLLM (e2e)")
@@ -52,7 +52,7 @@ def plot_batching_gain(
         by_c = {int(r["concurrency"]): float(r.get("throughput_tok_s", 0.0)) for r in results}
         return by_c.get(8, 0.0) / by_c.get(1, 1.0) if by_c.get(1, 0.0) > 0 else 0.0
 
-    labels = ["Yours"]
+    labels = ["M1 Air 4-bit"]
     values = [gain(local)]
     if vllm:
         labels.append("vLLM")

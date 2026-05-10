@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: white;
+    display: flex;
+    justify-content: center;
+    padding: 40px;
+  }
+  table {
+    border-collapse: collapse;
+    font-size: 15px;
+    min-width: 480px;
+  }
+  th {
+    text-align: left;
+    padding: 10px 24px 10px 0;
+    font-weight: 600;
+    border-bottom: 2px solid #111;
+    color: #111;
+  }
+  td {
+    padding: 10px 24px 10px 0;
+    border-bottom: 1px solid #e5e5e5;
+    color: #333;
+  }
+  tr:last-child td {
+    border-bottom: none;
+  }
+  .label {
+    color: #888;
+    font-size: 13px;
+  }
+  .peak {
+    font-weight: 600;
+    color: #111;
+  }
+  .drop {
+    color: #999;
+  }
+</style>
+</head>
+<body>
+<table>
+  <thead>
+    <tr>
+      <th class="label">Concurrency</th>
+      <th>This Implementation (M1 Air, 4-bit)</th>
+      <th>vLLM (Reference Implementation) (T4, FP16)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="label">1</td>
+      <td>27.8 tok/s</td>
+      <td>57.8 tok/s</td>
+    </tr>
+    <tr>
+      <td class="label">2</td>
+      <td>45.8 tok/s</td>
+      <td>105.3 tok/s</td>
+    </tr>
+    <tr>
+      <td class="label">4</td>
+      <td class="peak">59.2 tok/s ↑ peak</td>
+      <td>171.4 tok/s</td>
+    </tr>
+    <tr>
+      <td class="label">8</td>
+      <td class="drop">41.5 tok/s ↓</td>
+      <td>261.1 tok/s</td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>
