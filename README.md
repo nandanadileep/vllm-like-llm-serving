@@ -27,7 +27,7 @@ http://127.0.0.1:8000/metrics
 
 ## Optional vLLM Baseline
 
-Use the Colab guide in `colab/vllm_llama32_server.md` to start vLLM and get an ngrok URL like:
+Use the Colab guide in `docs/colab/vllm_llama32_server.md` to start vLLM and get an ngrok URL like:
 
 ```text
 https://<your-ngrok-host>/v1

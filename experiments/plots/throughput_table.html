@@ -12,17 +12,17 @@
   table {
     border-collapse: collapse;
     font-size: 15px;
-    min-width: 480px;
+    min-width: 560px;
   }
   th {
     text-align: left;
-    padding: 10px 24px 10px 0;
+    padding: 10px 28px 10px 0;
     font-weight: 600;
     border-bottom: 2px solid #111;
     color: #111;
   }
   td {
-    padding: 10px 24px 10px 0;
+    padding: 10px 28px 10px 0;
     border-bottom: 1px solid #e5e5e5;
     color: #333;
   }
@@ -33,12 +33,18 @@
     color: #888;
     font-size: 13px;
   }
+  .dim {
+    color: #bbb;
+  }
   .peak {
     font-weight: 600;
     color: #111;
   }
   .drop {
     color: #999;
+  }
+  .vllm {
+    color: #111;
   }
 </style>
 </head>
@@ -47,30 +53,35 @@
   <thead>
     <tr>
       <th class="label">Concurrency</th>
-      <th>This Implementation (M1 Air, 4-bit)</th>
-      <th>vLLM (Reference Implementation) (T4, FP16)</th>
+      <th class="dim">llama.cpp CPU</th>
+      <th>Near-vLLM Stack</th>
+      <th class="vllm">vLLM (T4)</th>
     </tr>
   </thead>
   <tbody>
     <tr>
       <td class="label">1</td>
+      <td class="dim">9.4 tok/s</td>
       <td>27.8 tok/s</td>
-      <td>57.8 tok/s</td>
+      <td class="vllm">57.8 tok/s</td>
     </tr>
     <tr>
       <td class="label">2</td>
+      <td class="dim">15.0 tok/s</td>
       <td>45.8 tok/s</td>
-      <td>105.3 tok/s</td>
+      <td class="vllm">105.3 tok/s</td>
     </tr>
     <tr>
       <td class="label">4</td>
-      <td class="peak">59.2 tok/s ↑ peak</td>
-      <td>171.4 tok/s</td>
+      <td class="dim">18.2 tok/s</td>
+      <td class="peak">59.2 tok/s &uarr; peak</td>
+      <td class="vllm">171.4 tok/s</td>
     </tr>
     <tr>
       <td class="label">8</td>
-      <td class="drop">41.5 tok/s ↓</td>
-      <td>261.1 tok/s</td>
+      <td class="dim">27.5 tok/s</td>
+      <td class="drop">41.5 tok/s &darr;</td>
+      <td class="vllm">261.1 tok/s</td>
     </tr>
   </tbody>
 </table>

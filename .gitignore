@@ -1,7 +1,11 @@
 __pycache__/
 *.py[cod]
+*.log
+.DS_Store
 .gstack/
 .venv/
 venv/
 .pytest_cache/
 .mypy_cache/
+models/
+tmp/

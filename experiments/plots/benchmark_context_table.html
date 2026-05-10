@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: white;
+    display: flex;
+    justify-content: center;
+    padding: 40px;
+  }
+  table {
+    border-collapse: collapse;
+    font-size: 15px;
+    min-width: 580px;
+  }
+  th {
+    text-align: left;
+    padding: 10px 28px 10px 0;
+    font-weight: 600;
+    border-bottom: 2px solid #111;
+    color: #111;
+  }
+  th.dim {
+    color: #bbb;
+    font-weight: 500;
+  }
+  td {
+    padding: 10px 28px 10px 0;
+    border-bottom: 1px solid #e5e5e5;
+    color: #333;
+  }
+  tr:last-child td {
+    border-bottom: none;
+  }
+  .label {
+    color: #888;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .dim {
+    color: #bbb;
+  }
+  .highlight {
+    font-weight: 600;
+    color: #111;
+  }
+</style>
+</head>
+<body>
+<table>
+  <thead>
+    <tr>
+      <th></th>
+      <th class="highlight">Near-vLLM Stack</th>
+      <th class="dim">llama.cpp CPU</th>
+      <th>vLLM (Reference)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="label">Model</td>
+      <td class="highlight">Llama-3.2-1B-Instruct</td>
+      <td class="dim">Llama-3.2-1B-Instruct</td>
+      <td>Llama-3.2-1B-Instruct</td>
+    </tr>
+    <tr>
+      <td class="label">Quantization</td>
+      <td class="highlight">4-bit (MLX)</td>
+      <td class="dim">4-bit (GGUF Q4_K_M)</td>
+      <td>FP16</td>
+    </tr>
+    <tr>
+      <td class="label">Hardware</td>
+      <td class="highlight">M1 Air 8GB</td>
+      <td class="dim">M1 Air 8GB</td>
+      <td>Colab T4 16GB</td>
+    </tr>
+    <tr>
+      <td class="label">Memory Bandwidth</td>
+      <td class="highlight">~68 GB/s</td>
+      <td class="dim">~68 GB/s</td>
+      <td>~320 GB/s</td>
+    </tr>
+    <tr>
+      <td class="label">API Access</td>
+      <td class="highlight">localhost</td>
+      <td class="dim">localhost</td>
+      <td>ngrok tunnel</td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>
