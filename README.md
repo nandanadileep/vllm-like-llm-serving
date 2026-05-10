@@ -2,6 +2,8 @@
 
 MLX-based LLM serving stack with continuous batching, prefix KV cache, chunked prefill, OpenAI-compatible chat completions, and benchmark comparison against vLLM and llama.cpp CPU.
 
+Write-up: [Building a vLLM-inspired LLM serving engine on Apple Silicon with MLX](https://medium.com/@nandanadileep29/building-a-vllm-inspired-llm-serving-engine-on-apple-silicon-with-mlx-65b0576ebd05?postPublishedType=repub)
+
 ## Setup
 
 ```bash
