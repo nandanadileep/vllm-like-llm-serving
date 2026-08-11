@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem with serving, streaming, caching, or benchmarks
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. Remove all tokens and credentials from logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the command, endpoint or benchmark, request payload, and relevant environment variables.
+      placeholder: |
+        1. Start the server with ...
+        2. Send ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Apple hardware
+      placeholder: MacBook Pro, M3 Pro, 18 GB
+    validations:
+      required: true
+  - type: input
+    id: software
+    attributes:
+      label: Software versions
+      description: Include macOS, Python, mlx, and mlx-lm versions.
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: mlx-community/Llama-3.2-1B-Instruct-4bit
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or metrics
+      description: Paste relevant output after removing credentials and private URLs.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I removed credentials, tokens, and private URLs.
+          required: true

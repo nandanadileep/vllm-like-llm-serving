@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a focused serving, observability, or benchmarking improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem or learning goal
+      description: What serving problem or concept would this help explore?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Describe the behavior, API, or experiment you would add.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This fits the project's Apple Silicon, MLX, or LLM-serving focus.
+          required: true
